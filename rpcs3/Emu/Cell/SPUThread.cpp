@@ -4556,9 +4556,30 @@ bool spu_thread::stop_and_signal(u32 code)
 		check_state();
 		return true;
 	}
+	default:
+	{
+		LOG_ERROR(SPU, "Unknown STOP code: 0x%x (op=0x%x, Out_MBox=%s)", code, _ref<u32>(pc), ch_out_mbox);
+		break;
+	}
 	}
 
-	fmt::throw_exception("Unknown STOP code: 0x%x (op=0x%x, Out_MBox=%s)", code, _ref<u32>(pc), ch_out_mbox);
+	group->run_state = SPU_THREAD_GROUP_STATUS_STOPPED;
+	const u64 data1 = ((u64)group->id << 32) | this->id;
+	const u64 _npc = interrupts_enabled | pc + 4;
+
+	if (code == 0x3fff)
+	{
+		group->send_exception_event(data1, (_npc << 32) | SYS_SPU_EXCEPTION_STOP_BREAK, 0);	
+	}
+	else
+	{
+		group->send_exception_event(data1, (_npc << 32) | SYS_SPU_EXCEPTION_UNKNOWN_SIGNAL, status);
+	}
+
+	// Note: stopd does not abort sys_spu_thread_group_join
+	state += cpu_flag::suspend;
+
+	return false;
 }
 
 void spu_thread::halt()
