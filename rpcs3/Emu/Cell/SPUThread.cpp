@@ -2078,53 +2078,6 @@ bool spu_thread::stop_and_signal(u32 code)
 
 	switch (code)
 	{
-	case 0x000:
-	{
-		LOG_WARNING(SPU, "STOP 0x0");
-
-		// HACK: find an ILA instruction
-		for (u32 addr = pc; addr < 0x40000; addr += 4)
-		{
-			const u32 instr = _ref<u32>(addr);
-
-			if (instr >> 25 == 0x21)
-			{
-				pc = addr;
-				return false;
-			}
-
-			if (instr > 0x1fffff)
-			{
-				break;
-			}
-		}
-
-		// HACK: wait for executable code
-		while (!_ref<u32>(pc))
-		{
-			if (is_stopped())
-			{
-				return false;
-			}
-
-			thread_ctrl::wait_for(1000);
-		}
-
-		return false;
-	}
-
-	case 0x001:
-	{
-		thread_ctrl::wait_for(1000); // hack
-		return true;
-	}
-
-	case 0x002:
-	{
-		state += cpu_flag::ret;
-		return true;
-	}
-
 	case 0x110:
 	{
 		/* ===== sys_spu_thread_receive_event ===== */
@@ -2438,35 +2391,62 @@ bool spu_thread::stop_and_signal(u32 code)
 	}
 	}
 
-	if (!ch_out_mbox.get_count())
+	for (auto& thread : group->threads)
 	{
-		fmt::throw_exception("Unknown STOP code: 0x%x (Out_MBox is empty)" HERE, code);
+		if (thread)
+		{
+			thread->state += cpu_flag::suspend;
+			thread->status.store((code << 16) | SPU_STATUS_STOPPED_BY_STOP);
+
+			if (thread.get() != this)
+			{
+				thread->notify();
+			}
+		}
+	}
+
+	group->run_state = SPU_THREAD_GROUP_STATUS_STOPPED;
+
+	if (code == 0x3fff)
+	{
+		LOG_FATAL(SPU, "STOP BREAK (opcode=0x%x)", _ref<u32>(pc));	
+		group->send_exception_event(((u64)group->id << 32) | this->id, ((u64)(interrupts_enabled | pc + 4) << 32) | SYS_SPU_EXCEPTION_STOP_BREAK, 0);	
 	}
 	else
 	{
-		fmt::throw_exception("Unknown STOP code: 0x%x (Out_MBox=0x%x)" HERE, code, ch_out_mbox.get_value());
+		LOG_FATAL(SPU, "Unknown STOP code: 0x%x (Out_Mbox: count: %x)", _ref<u32>(pc), ch_out_mbox.get_count());
+		group->send_exception_event(((u64)group->id << 32) | this->id, ((u64)(interrupts_enabled | pc + 4) << 32) | SYS_SPU_EXCEPTION_UNKNOWN_SIGNAL, status);
 	}
+
+	return false;
 }
 
 void spu_thread::halt()
 {
-	LOG_TRACE(SPU, "halt()");
+	LOG_FATAL(SPU, "halt()");
+
+	status.store(SPU_STATUS_STOPPED_BY_HALT);
 
 	if (offset >= RAW_SPU_BASE_ADDR)
 	{
-		status.atomic_op([](u32& status)
-		{
-			status |= SPU_STATUS_STOPPED_BY_HALT;
-			status &= ~SPU_STATUS_RUNNING;
-		});
-
 		int_ctrl[2].set(SPU_INT2_STAT_SPU_HALT_OR_STEP_INT);
 
 		throw cpu_flag::stop;
 	}
 
-	status |= SPU_STATUS_STOPPED_BY_HALT;
-	fmt::throw_exception("Halt" HERE);
+	state += cpu_flag::suspend;
+
+	for (auto& thread : group->threads)
+	{
+		if (thread && thread.get() != this)
+		{
+			thread->status.store(SPU_STATUS_STOPPED_BY_HALT);
+			thread->notify();
+		}
+	}
+
+	group->run_state = SPU_THREAD_GROUP_STATUS_STOPPED;
+	group->send_exception_event(((u64)group->id << 32) | this->id, ((u64)(interrupts_enabled | pc + 4) << 32) | SYS_SPU_EXCEPTION_HALT, 0);
 }
 
 void spu_thread::fast_call(u32 ls_addr)
