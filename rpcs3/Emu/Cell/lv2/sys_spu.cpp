@@ -1259,8 +1259,7 @@ error_code sys_spu_thread_write_ls(ppu_thread& ppu, u32 id, u32 lsa, u64 value, 
 
 	std::lock_guard lock(group->mutex);
 
-	if (auto state = +group->run_state;
-		state < SPU_THREAD_GROUP_STATUS_WAITING || state > SPU_THREAD_GROUP_STATUS_RUNNING)
+	if (group->run_state < SPU_THREAD_GROUP_STATUS_WAITING)
 	{
 		if (state == SPU_THREAD_GROUP_STATUS_DESTROYED)
 		{
@@ -1302,8 +1301,7 @@ error_code sys_spu_thread_read_ls(ppu_thread& ppu, u32 id, u32 lsa, vm::ptr<u64>
 
 	std::lock_guard lock(group->mutex);
 
-	if (auto state = +group->run_state;
-		state < SPU_THREAD_GROUP_STATUS_WAITING || state > SPU_THREAD_GROUP_STATUS_RUNNING)
+	if (group->run_state < SPU_THREAD_GROUP_STATUS_WAITING)
 	{
 		if (state == SPU_THREAD_GROUP_STATUS_DESTROYED)
 		{
