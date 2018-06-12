@@ -451,11 +451,6 @@ void spu_thread::cpu_init()
 	ch_out_mbox.data.store({});
 	ch_out_intr_mbox.data.store({});
 
-	snr_config = 0;
-
-	ch_snr1.data.store({});
-	ch_snr2.data.store({});
-
 	ch_event_mask = 0;
 	ch_event_stat = 0;
 	interrupts_enabled = false;
