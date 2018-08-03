@@ -1995,13 +1995,13 @@ bool spu_thread::set_ch_value(u32 ch, u32 value)
 
 	case MFC_Size:
 	{
-		ch_mfc_cmd.size = value & 0x7fff;
+		ch_mfc_cmd.size = value;
 		return true;
 	}
 
 	case MFC_TagID:
 	{
-		ch_mfc_cmd.tag = value & 0x1f;
+		ch_mfc_cmd.tag = value;
 		return true;
 	}
 
