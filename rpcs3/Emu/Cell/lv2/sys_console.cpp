@@ -1,6 +1,7 @@
 ﻿#include "stdafx.h"
 #include "Emu/System.h"
 
+#include "Emu/Cell/PPUThread.h"
 #include "sys_tty.h"
 
 #include "sys_console.h"

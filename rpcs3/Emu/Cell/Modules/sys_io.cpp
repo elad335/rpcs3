@@ -1,5 +1,5 @@
 ﻿#include "stdafx.h"
-#include "Emu/Cell/PPUModule.h"
+/*#include "Emu/Cell/PPUModule.h"
 
 LOG_CHANNEL(sys_io);
 
@@ -72,3 +72,4 @@ DECLARE(ppu_module_manager::sys_io)("sys_io", []()
 	REG_FUNC(sys_io, sys_config_unregister_io_error_handler);
 	REG_FUNC(sys_io, sys_config_unregister_service);
 });
+*/

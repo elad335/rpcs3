@@ -1,11 +1,11 @@
 ﻿#include "stdafx.h"
-#include "Emu/System.h"
 #include "Emu/Memory/vm.h"
+#include "Emu/System.h"
 #include "Emu/IdManager.h"
 
 #include "Emu/Cell/ErrorCodes.h"
 
-#include "sys_io.h"
+#include "Emu/Cell/lv2/sys_io.h"
 
 
 logs::channel sys_io("sys_io");
