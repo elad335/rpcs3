@@ -273,3 +273,12 @@ u64 sys_time_get_timebase_frequency()
 
 	return g_timebase_freq;
 }
+
+s32 sys_time_get_rtc(vm::ptr<u64> rtc)
+{
+	sys_time.todo("sys_time_get_timebase_frequency()");
+
+	*rtc = get_timebased_time();
+
+	return CELL_OK;
+}

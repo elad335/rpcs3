@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "Emu/Memory/vm_ptr.h"
 #include "Emu/Cell/ErrorCodes.h"
@@ -402,3 +402,21 @@ error_code sys_fs_lsn_write(ppu_thread& ppu, u32 fd, vm::cptr<void>, u64);
 error_code sys_fs_mapped_allocate(ppu_thread& ppu, u32 fd, u64, vm::pptr<void> out_ptr);
 error_code sys_fs_mapped_free(ppu_thread& ppu, u32 fd, vm::ptr<void> ptr);
 error_code sys_fs_truncate2(ppu_thread& ppu, u32 fd, u64 size);
+error_code sys_fs_mount(vm::cptr<char> dev_name, vm::cptr<char> file_system, vm::cptr<char> path, s32 unk1, s32 prot, s32 unk3, vm::cptr<char> str1, u32 str_len);
+
+struct CellFsMountInfo
+{
+	char mount_path[0x20]; // 0x0
+	char filesystem[0x20]; // 0x20
+	char dev_name[0x40];   // 0x40
+	be_t<u32> unk1;        // 0x80
+	be_t<u32> unk2;        // 0x84
+	be_t<u32> unk3;        // 0x88
+	be_t<u32> unk4;        // 0x8C
+	be_t<u32> unk5;        // 0x90
+};
+
+static_assert(sizeof(CellFsMountInfo) == 0x94, "CellFsMountInfoSizeTest");
+
+error_code sys_fs_get_mount_info_size(vm::ptr<u64> len);
+error_code sys_fs_get_mount_info(vm::ptr<CellFsMountInfo> info, u32 len, vm::ptr<u64> out_len);

@@ -53,6 +53,11 @@ error_code sys_mutex_create(ppu_thread& ppu, vm::ptr<u32> mutex_id, vm::ptr<sys_
 		sys_mutex.todo("sys_mutex_create(): unexpected adaptive (0x%x)", attr->adaptive);
 	}
 
+	if (attr->ipc_key != 0)
+	{
+		sys_mutex.todo("mutexipc = 0x%Xll", attr->ipc_key);
+	}
+
 	if (auto error = lv2_obj::create<lv2_mutex>(attr->pshared, attr->ipc_key, attr->flags, [&]()
 	{
 		return std::make_shared<lv2_mutex>(

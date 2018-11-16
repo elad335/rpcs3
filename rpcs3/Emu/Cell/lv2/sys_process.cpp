@@ -362,3 +362,10 @@ void _sys_process_exit2(ppu_thread& ppu, s32 status, vm::ptr<sys_exit2_param> ar
 
 	ppu.state += cpu_flag::dbg_global_stop;
 }
+
+s32 sys_process_spawns_a_self2(vm::ptr<u32> pid, u32 primary_prio, u64 flags, vm::ptr<void> stack, u32 stack_size, u32 mem_id, vm::ptr<void> param_sfo, vm::ptr<void> dbg_data)
+{
+	sys_process.todo("sys_process_spawns_a_self2");
+
+	return CELL_OK;
+}
