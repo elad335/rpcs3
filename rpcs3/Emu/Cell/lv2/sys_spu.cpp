@@ -2100,7 +2100,7 @@ error_code sys_isolated_spu_set_int_mask(ppu_thread& ppu, u32 id, u32 class_id, 
 }
 
 template <bool isolated = false>
-error_code raw_spu_set_int_stat(u32 id, u32 class_id, u64 stat)
+error_code raw_spu_set_int_stat(ppu_thread& ppu, u32 id, u32 class_id, u64 stat)
 {
 	if (class_id != 0 && class_id != 2)
 	{
@@ -2114,7 +2114,11 @@ error_code raw_spu_set_int_stat(u32 id, u32 class_id, u64 stat)
 		return CELL_ESRCH;
 	}
 
-	thread->int_ctrl[class_id].clear(stat);
+	if (thread->int_ctrl[class_id].clear(stat) 
+		&& ppu.intr_ctrl.load() == &thread->int_ctrl[class_id])
+	{
+		ppu.intr_cleared.release(true);
+	}
 
 	return CELL_OK;
 }
@@ -2125,7 +2129,7 @@ error_code sys_raw_spu_set_int_stat(ppu_thread& ppu, u32 id, u32 class_id, u64 s
 
 	sys_spu.trace("sys_raw_spu_set_int_stat(id=%d, class_id=%d, stat=0x%llx)", id, class_id, stat);
 
-	return raw_spu_set_int_stat(id, class_id, stat);
+	return raw_spu_set_int_stat(ppu, id, class_id, stat);
 }
 
 error_code sys_isolated_spu_set_int_stat(ppu_thread& ppu, u32 id, u32 class_id, u64 stat)
@@ -2134,7 +2138,7 @@ error_code sys_isolated_spu_set_int_stat(ppu_thread& ppu, u32 id, u32 class_id, 
 
 	sys_spu.todo("sys_isolated_spu_set_int_stat(id=%d, class_id=%d, stat=0x%llx)", id, class_id, stat);
 
-	return raw_spu_set_int_stat<true>(id, class_id, stat);
+	return raw_spu_set_int_stat<true>(ppu, id, class_id, stat);
 }
 
 template <bool isolated = false>
@@ -2145,7 +2149,10 @@ error_code raw_spu_get_int_control(u32 id, u32 class_id, vm::ptr<u64> value, ato
 		return CELL_EINVAL;
 	}
 
-	const auto thread = idm::get<named_thread<spu_thread>>(spu_thread::find_raw_spu(id));
+	// Also protects it from SPU access
+	std::lock_guard lock(id_manager::g_mutex);
+
+	const auto thread = idm::check_unlocked<named_thread<spu_thread>>(spu_thread::find_raw_spu(id));
 
 	if (!thread || thread->is_isolated != isolated) [[unlikely]]
 	{
@@ -2203,7 +2210,7 @@ error_code raw_spu_read_puint_mb(u32 id, vm::ptr<u32> value)
 		return CELL_ESRCH;
 	}
 
-	*value = thread->ch_out_intr_mbox.pop(*thread);
+	*value = thread->ch_out_intr_mbox.pop(*thread, true);
 
 	return CELL_OK;
 }

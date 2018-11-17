@@ -3,6 +3,7 @@
 #include "../CPU/CPUThread.h"
 #include "../Memory/vm_ptr.h"
 #include "Utilities/lockless.h"
+#include "SPUThread.h"
 
 LOG_CHANNEL(ppu_log, "PPU");
 
@@ -197,6 +198,8 @@ public:
 	const u32 stack_addr; // Stack address
 
 	atomic_t<ppu_join_status> joiner; // Joining thread or status
+	atomic_t<spu_int_ctrl_t*> intr_ctrl{}; // Bound SPU thread interrupt entry
+	atomic_t<bool> intr_cleared{false}; // Set if the interrupt has been ack
 
 	lf_fifo<atomic_t<cmd64>, 127> cmd_queue; // Command queue for asynchronous operations.
 
