@@ -292,7 +292,6 @@
     <ClCompile Include="Emu\Cell\Modules\sysPrxForUser.cpp" />
     <ClCompile Include="Emu\Cell\Modules\sys_game.cpp" />
     <ClCompile Include="Emu\Cell\Modules\sys_heap.cpp" />
-    <ClCompile Include="Emu\Cell\Modules\sys_io.cpp" />
     <ClCompile Include="Emu\Cell\Modules\sys_libc.cpp" />
     <ClCompile Include="Emu\Cell\Modules\sys_lv2dbg.cpp" />
     <ClCompile Include="Emu\Cell\Modules\sys_lwcond_.cpp" />
