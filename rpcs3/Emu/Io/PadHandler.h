@@ -35,6 +35,7 @@ enum PortSettings
 
 enum Digital1Flags
 {
+	CELL_PAD_CTRL_PS       = 0x00000100,
 	CELL_PAD_CTRL_LEFT     = 0x00000080,
 	CELL_PAD_CTRL_DOWN     = 0x00000040,
 	CELL_PAD_CTRL_RIGHT    = 0x00000020,
@@ -72,6 +73,8 @@ enum DeviceType
 	CELL_PAD_DEV_TYPE_BD_REMOCON = 4,
 	CELL_PAD_DEV_TYPE_LDD        = 5,
 };
+
+#define CELL_PAD_CTRL_LDD_PS    (1 << 0)
 
 enum ButtonDataOffset
 {
