@@ -10,12 +10,9 @@ struct sys_hid_info_5 {
 };
 
 struct sys_hid_info_2 {
-	be_t<u32> unk1;
-	be_t<u32> unk2;
-	be_t<u32> unk3;
-	be_t<u32> unk4;
-	be_t<u32> unk5;
-	u8 unk6;
+	be_t<u16> vid;
+	be_t<u16> pid;
+	u8 unk[17];
 };
 
 struct sys_hid_ioctl_68 {
@@ -35,5 +32,6 @@ error_code sys_hid_manager_ioctl(u32 hid_handle, u32 pkg_id, vm::ptr<void> buf, 
 error_code sys_hid_manager_add_hot_key_observer(u32 event_queue, vm::ptr<u32> unk);
 error_code sys_hid_manager_check_focus();
 error_code sys_hid_manager_is_process_permission_root();
+error_code sys_hid_manager_513(u64 a1, u64 a2, vm::ptr<void> buf, u64 buf_size);
 error_code sys_hid_manager_514(u32 pkg_id, vm::ptr<void> buf, u64 buf_size);
 error_code sys_hid_manager_read(u32 handle, u32 pkg_id, vm::ptr<void> buf, u64 buf_size);
