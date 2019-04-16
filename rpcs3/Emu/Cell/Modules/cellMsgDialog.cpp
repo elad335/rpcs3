@@ -84,7 +84,7 @@ error_code open_exit_dialog(const std::string& message, bool is_exit_requested)
 
 	if (is_exit_requested)
 	{
-		callback.set(ppu_function_manager::addr + 8 * FIND_FUNC(exit_game));
+		callback.set(ppu_function_manager::addr + 4 * FIND_FUNC(exit_game));
 	}
 
 	const error_code res = open_msg_dialog

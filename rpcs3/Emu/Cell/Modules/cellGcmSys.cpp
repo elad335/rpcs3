@@ -426,7 +426,7 @@ s32 _cellGcmInitBody(ppu_thread& ppu, vm::pptr<CellGcmContextData> context, u32 
 	m_config->current_context.begin.set(g_defaultCommandBufferBegin + 4096); // 4 kb reserved at the beginning
 	m_config->current_context.end.set(g_defaultCommandBufferBegin + 32 * 1024 - 4); // 4b at the end for jump
 	m_config->current_context.current = m_config->current_context.begin;
-	m_config->current_context.callback.set(ppu_function_manager::addr + 8 * FIND_FUNC(cellGcmCallback));
+	m_config->current_context.callback.set(ppu_function_manager::addr + 4 * FIND_FUNC(cellGcmCallback));
 
 	m_config->ctxt_addr = context.addr();
 	m_config->gcm_buffers.set(vm::alloc(sizeof(CellGcmDisplayInfo) * 8, vm::main));

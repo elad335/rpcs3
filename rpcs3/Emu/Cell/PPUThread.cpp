@@ -829,7 +829,7 @@ void ppu_thread::fast_call(u32 addr, u32 rtoc)
 
 	cia = addr;
 	gpr[2] = rtoc;
-	lr = ppu_function_manager::addr + 8; // HLE stop address
+	lr = ppu_function_manager::addr + 4; // HLE stop address
 	current_function = nullptr;
 
 	g_tls_log_prefix = []
