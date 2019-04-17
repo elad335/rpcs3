@@ -569,9 +569,12 @@ s32 cellVdecGetPicture(u32 handle, vm::cptr<CellVdecPicFormat> format, vm::ptr<u
 
 	const auto vdec = idm::get<vdec_context>(handle);
 
-	if (!format || !vdec || format->formatType > 4 || (format->formatType <= CELL_VDEC_PICFMT_RGBA32_ILV && format->colorMatrixType > CELL_VDEC_COLOR_MATRIX_TYPE_BT709))
+	if (const auto type = (format->formatType & ~3u) == 0x160000 ? format->formatType & 3 : format->formatType;
+	!format || !vdec || type > 4 || (type <= CELL_VDEC_PICFMT_RGBA32_ILV && format->colorMatrixType > CELL_VDEC_COLOR_MATRIX_TYPE_BT709))
 	{
-		return CELL_VDEC_ERROR_ARG;
+		cellVdec.error("FormatType=0x%x, colorMatrix=0x%x", format->formatType, format->colorMatrixType);
+		const error_code error = (s32)CELL_VDEC_ERROR_ARG;
+		return (s32)error;
 	}
 
 	vdec_frame frame;
