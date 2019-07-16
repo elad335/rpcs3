@@ -632,6 +632,7 @@ public:
 			return g_raw_spu_id[id];
 		}
 
+		// Invalid RawSPU ID
 		return -1;
 	}
 };

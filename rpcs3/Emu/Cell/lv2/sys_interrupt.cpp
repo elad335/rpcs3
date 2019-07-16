@@ -74,47 +74,45 @@ error_code _sys_interrupt_thread_establish(ppu_thread& ppu, vm::ptr<u32> ih, u32
 
 	CellError error = CELL_EAGAIN;
 
-	const u32 id = idm::import<lv2_obj, lv2_int_serv>([&]()
+	const u32 id = idm::import<lv2_obj, lv2_int_serv>([&](lv2_int_serv& int_serv)
 	{
-		std::shared_ptr<lv2_int_serv> result;
-
 		// Get interrupt tag
-		const auto tag = idm::check_unlocked<lv2_obj, lv2_int_tag>(intrtag);
+		const auto tag = idm::get<lv2_obj, lv2_int_tag>(intrtag);
 
 		if (!tag)
 		{
 			error = CELL_ESRCH;
-			return result;
+			return false;
 		}
 
 		// Get interrupt thread
-		const auto it = idm::get_unlocked<named_thread<ppu_thread>>(intrthread);
+		const auto it = idm::get<named_thread<ppu_thread>>(intrthread);
 
 		if (!it)
 		{
 			error = CELL_ESRCH;
-			return result;
+			return false;
 		}
 
 		// If interrupt thread is running, it's already established on another interrupt tag
 		if (!(it->state & cpu_flag::stop))
 		{
 			error = CELL_EAGAIN;
-			return result;
+			return false;
 		}
 
 		// It's unclear if multiple handlers can be established on single interrupt tag
 		if (!tag->handler.expired())
 		{
 			error = CELL_ESTAT;
-			return result;
+			return false;
 		}
 
-		result = std::make_shared<lv2_int_serv>(it, arg1, arg2);
+		::new(&int_serv) lv2_int_serv(it, arg1, arg2);
 		tag->handler = result;
 		it->state -= cpu_flag::stop;
 		thread_ctrl::notify(*it);
-		return result;
+		return true;
 	});
 
 	if (id)

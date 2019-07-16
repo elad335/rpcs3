@@ -478,7 +478,7 @@ const bool Emulator::SetUsr(const std::string& user)
 
 std::string Emulator::PPUCache() const
 {
-	const auto _main = fxm::check_unlocked<ppu_module>();
+	const auto _main = fxm::check<ppu_module>();
 
 	if (!_main || _main->cache.empty())
 	{
@@ -943,7 +943,7 @@ void Emulator::Load(const std::string& title_id, bool add_only, bool force_globa
 		}
 
 		// Load patches from different locations
-		fxm::check_unlocked<patch_engine>()->append(fs::get_config_dir() + "data/" + m_title_id + "/patch.yml");
+		fxm::check<patch_engine>()->append(fs::get_config_dir() + "data/" + m_title_id + "/patch.yml");
 
 		// Mount all devices
 		const std::string emu_dir = GetEmuDir();
@@ -1658,7 +1658,6 @@ void Emulator::Stop(bool restart)
 	LOG_NOTICE(GENERAL, "All threads stopped...");
 
 	lv2_obj::cleanup();
-	idm::clear();
 	fxm::clear();
 	g_idm->init();
 

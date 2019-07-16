@@ -1169,7 +1169,7 @@ s32 cellDmuxEnableEs(u32 handle, vm::cptr<CellCodecEsFilterId> esFilterId, vm::c
 
 	// TODO: check esFilterId, esResourceInfo, esCb and esSpecificInfo correctly
 
-	const auto es = idm::make_ptr<ElementaryStream>(dmux.get(), esResourceInfo->memAddr, esResourceInfo->memSize,
+	const auto es = idm::make_ptr<ElementaryStream>(&*dmux, esResourceInfo->memAddr, esResourceInfo->memSize,
 		esFilterId->filterIdMajor, esFilterId->filterIdMinor, esFilterId->supplementalInfo1, esFilterId->supplementalInfo2,
 		esCb->cbEsMsgFunc, esCb->cbArg, esSpecificInfo);
 
@@ -1180,7 +1180,7 @@ s32 cellDmuxEnableEs(u32 handle, vm::cptr<CellCodecEsFilterId> esFilterId, vm::c
 
 	DemuxerTask task(dmuxEnableEs);
 	task.es.es = es->id;
-	task.es.es_ptr = es.get();
+	task.es.es_ptr = &*es;
 
 	dmux->job.push(task, &dmux->is_closed);
 	return CELL_OK;
@@ -1199,7 +1199,7 @@ s32 cellDmuxDisableEs(u32 esHandle)
 
 	DemuxerTask task(dmuxDisableEs);
 	task.es.es = esHandle;
-	task.es.es_ptr = es.get();
+	task.es.es_ptr = &*es;
 
 	es->dmux->job.push(task, &es->dmux->is_closed);
 	return CELL_OK;
@@ -1218,7 +1218,7 @@ s32 cellDmuxResetEs(u32 esHandle)
 
 	DemuxerTask task(dmuxResetEs);
 	task.es.es = esHandle;
-	task.es.es_ptr = es.get();
+	task.es.es_ptr = &*es;
 
 	es->dmux->job.push(task, &es->dmux->is_closed);
 	return CELL_OK;
@@ -1347,7 +1347,7 @@ s32 cellDmuxFlushEs(u32 esHandle)
 
 	DemuxerTask task(dmuxFlushEs);
 	task.es.es = esHandle;
-	task.es.es_ptr = es.get();
+	task.es.es_ptr = &*es;
 
 	es->dmux->job.push(task, &es->dmux->is_closed);
 	return CELL_OK;

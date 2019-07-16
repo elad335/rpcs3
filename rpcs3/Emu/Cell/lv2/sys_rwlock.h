@@ -31,6 +31,7 @@ struct lv2_rwlock final : lv2_obj
 
 	shared_mutex mutex;
 	atomic_t<s64> owner{0};
+	atomic_t<u64> waiters{0};
 	std::deque<cpu_thread*> rq;
 	std::deque<cpu_thread*> wq;
 

@@ -79,16 +79,16 @@ error_code _sys_lwcond_signal(ppu_thread& ppu, u32 lwcond_id, u32 lwmutex_id, u3
 
 	const auto cond = idm::check<lv2_obj, lv2_lwcond>(lwcond_id, [&](lv2_lwcond& cond) -> cpu_thread*
 	{
-		if (ppu_thread_id != -1 && !idm::check_unlocked<named_thread<ppu_thread>>(ppu_thread_id))
+		if (ppu_thread_id != -1 && !idm::check<named_thread<ppu_thread>>(ppu_thread_id))
 		{
 			return (cpu_thread*)(1);
 		}
 
-		lv2_lwmutex* mutex;
+		idm::ref_object<lv2_obj, lv2_lwmutex> mutex;
 
 		if (mode != 2)
 		{
-			mutex = idm::check_unlocked<lv2_obj, lv2_lwmutex>(lwmutex_id);
+			mutex = idm::get<lv2_obj, lv2_lwmutex>(lwmutex_id);
 
 			if (!mutex)
 			{
@@ -190,11 +190,11 @@ error_code _sys_lwcond_signal_all(ppu_thread& ppu, u32 lwcond_id, u32 lwmutex_id
 
 	const auto cond = idm::check<lv2_obj, lv2_lwcond>(lwcond_id, [&](lv2_lwcond& cond) -> s32
 	{
-		lv2_lwmutex* mutex;
+		idm::ref_object<lv2_obj, lv2_lwmutex> mutex;
 
 		if (mode != 2)
 		{
-			mutex = idm::check_unlocked<lv2_obj, lv2_lwmutex>(lwmutex_id);
+			mutex = idm::get<lv2_obj, lv2_lwmutex>(lwmutex_id);
 
 			if (!mutex)
 			{
@@ -244,7 +244,7 @@ error_code _sys_lwcond_signal_all(ppu_thread& ppu, u32 lwcond_id, u32 lwmutex_id
 
 	for (auto cpu : threads)
 	{
-		cond->awake(*cpu);
+		lv2_obj::awake(*cpu);
 	}
 
 	if (mode == 1)
@@ -264,14 +264,13 @@ error_code _sys_lwcond_queue_wait(ppu_thread& ppu, u32 lwcond_id, u32 lwmutex_id
 
 	ppu.gpr[3] = CELL_OK;
 
-	std::shared_ptr<lv2_lwmutex> mutex;
-
 	const auto cond = idm::get<lv2_obj, lv2_lwcond>(lwcond_id, [&](lv2_lwcond& cond) -> cpu_thread*
 	{
-		mutex = idm::get_unlocked<lv2_obj, lv2_lwmutex>(lwmutex_id);
+		auto mutex = idm::get<lv2_obj, lv2_lwmutex>(lwmutex_id);
 
 		if (!mutex)
 		{
+			ppu.gpr[3] = CELL_ESRCH;
 			return nullptr;
 		}
 
@@ -294,7 +293,7 @@ error_code _sys_lwcond_queue_wait(ppu_thread& ppu, u32 lwcond_id, u32 lwmutex_id
 		return nullptr;
 	});
 
-	if (!cond || !mutex)
+	if (!cond || ppu.gpr[3])
 	{
 		return CELL_ESRCH;
 	}

@@ -16,6 +16,22 @@
 #include "sys_mmapper.h"
 #include "sys_event.h"
 
+lv2_spu_group::lv2_spu_group(std::string name, u32 num, s32 prio, s32 type, u32 ct)
+	: id(idm::last_id())
+	, name(name)
+	, max_num(num)
+	, init(0)
+	, prio(prio)
+	, type(type)
+	, ct(ct)
+	, run_state(SPU_THREAD_GROUP_STATUS_NOT_INITIALIZED)
+	, exit_status(0)
+	, join_state(0)
+	, running(0)
+	, stop_count(0)
+{
+}
+
 LOG_CHANNEL(sys_spu);
 
 void sys_spu_image::load(const fs::file& stream)
@@ -248,7 +264,7 @@ error_code sys_spu_thread_initialize(ppu_thread& ppu, vm::ptr<u32> thread, u32 g
 
 	const vm::addr_t ls_addr{verify("SPU LS" HERE, vm::alloc(0x80000, vm::main))};
 
-	const u32 tid = idm::import<named_thread<spu_thread>>([&]()
+	const u32 tid = idm::import<named_thread<spu_thread>>([&](named_thread<spu_thread>& spu_thr)
 	{
 		const u32 tid = idm::last_id();
 
@@ -259,8 +275,8 @@ error_code sys_spu_thread_initialize(ppu_thread& ppu, vm::ptr<u32> thread, u32 g
 			fmt::append(full_name, " (%s)", thread_name);
 		}
 
-		group->threads[spu_num] = std::make_shared<named_thread<spu_thread>>(full_name, ls_addr, group.get(), spu_num, thread_name);
-		return group->threads[spu_num];
+		::new(&spu_thr) named_thread<spu_thread>(full_name, ls_addr, &*group, spu_num, thread_name);
+		return true;
 	});
 
 	*thread = tid;
@@ -1491,16 +1507,14 @@ error_code sys_raw_spu_create_interrupt_tag(ppu_thread& ppu, u32 id, u32 class_i
 
 	CellError error = {};
 
-	const auto tag = idm::import<lv2_obj, lv2_int_tag>([&]()
+	const auto tag = idm::import<lv2_obj, lv2_int_tag>([&](lv2_int_tag& result)
 	{
-		std::shared_ptr<lv2_int_tag> result;
-
-		auto thread = idm::check_unlocked<named_thread<spu_thread>>(spu_thread::find_raw_spu(id));
+		auto thread = idm::get<named_thread<spu_thread>>(spu_thread::find_raw_spu(id));
 
 		if (!thread || thread->group)
 		{
 			error = CELL_ESRCH;
-			return result;
+			return false;
 		}
 
 		auto& int_ctrl = thread->int_ctrl[class_id];
@@ -1508,12 +1522,12 @@ error_code sys_raw_spu_create_interrupt_tag(ppu_thread& ppu, u32 id, u32 class_i
 		if (int_ctrl.tag)
 		{
 			error = CELL_EAGAIN;
-			return result;
+			return false;
 		}
 
-		result = std::make_shared<lv2_int_tag>();
+		::new(&result) lv2_int_tag();
 		int_ctrl.tag = result;
-		return result;
+		return true;
 	});
 
 	if (tag)

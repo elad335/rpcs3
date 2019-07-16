@@ -99,12 +99,10 @@ error_code sys_event_queue_create(vm::ptr<u32> equeue_id, vm::ptr<sys_event_queu
 		return CELL_EINVAL;
 	}
 
-	auto queue = std::make_shared<lv2_event_queue>(protocol, type, attr->name_u64, event_queue_key, size);
-
 	if (event_queue_key == SYS_EVENT_QUEUE_LOCAL)
 	{
 		// Not an IPC queue
-		if (const u32 _id = idm::import_existing<lv2_obj, lv2_event_queue>(std::move(queue)))
+		if (const u32 _id = idm::make<lv2_obj, lv2_event_queue>(protocol, type, attr->name_u64, event_queue_key, size))
 		{
 			*equeue_id = _id;
 			return CELL_OK;
@@ -112,6 +110,8 @@ error_code sys_event_queue_create(vm::ptr<u32> equeue_id, vm::ptr<sys_event_queu
 
 		return CELL_EAGAIN;
 	}
+
+	auto queue = std::make_shared<lv2_event_queue>(protocol, type, attr->name_u64, event_queue_key, size);
 
 	// Create IPC queue
 	if (!ipc_manager<lv2_event_queue, u64>::add(event_queue_key, [&]() -> std::shared_ptr<lv2_event_queue>
@@ -388,11 +388,10 @@ error_code sys_event_port_connect_local(u32 eport_id, u32 equeue_id)
 
 	sys_event.warning("sys_event_port_connect_local(eport_id=0x%x, equeue_id=0x%x)", eport_id, equeue_id);
 
-	std::lock_guard lock(id_manager::g_mutex);
+	const auto port = idm::lock<lv2_obj, lv2_event_port>(eport_id);
+	auto queue = idm::get<lv2_obj, lv2_event_queue>(equeue_id);
 
-	const auto port = idm::check_unlocked<lv2_obj, lv2_event_port>(eport_id);
-
-	if (!port || !idm::check_unlocked<lv2_obj, lv2_event_queue>(equeue_id))
+	if (!port || !queue)
 	{
 		return CELL_ESRCH;
 	}
@@ -402,12 +401,12 @@ error_code sys_event_port_connect_local(u32 eport_id, u32 equeue_id)
 		return CELL_EINVAL;
 	}
 
-	if (!port->queue.expired())
+	if (port->queue)
 	{
 		return CELL_EISCONN;
 	}
 
-	port->queue = idm::get_unlocked<lv2_obj, lv2_event_queue>(equeue_id);
+	port->queue = queue;
 
 	return CELL_OK;
 }
@@ -420,9 +419,7 @@ error_code sys_event_port_connect_ipc(ppu_thread& ppu, u32 eport_id, u64 ipc_key
 
 	auto queue = lv2_event_queue::find(ipc_key);
 
-	std::lock_guard lock(id_manager::g_mutex);
-
-	const auto port = idm::check_unlocked<lv2_obj, lv2_event_port>(eport_id);
+	const auto port = idm::lock<lv2_obj, lv2_event_port>(eport_id);
 
 	if (!port || !queue)
 	{
@@ -434,7 +431,7 @@ error_code sys_event_port_connect_ipc(ppu_thread& ppu, u32 eport_id, u64 ipc_key
 		return CELL_EINVAL;
 	}
 
-	if (!port->queue.expired())
+	if (port->queue)
 	{
 		return CELL_EISCONN;
 	}
@@ -450,23 +447,21 @@ error_code sys_event_port_disconnect(ppu_thread& ppu, u32 eport_id)
 
 	sys_event.warning("sys_event_port_disconnect(eport_id=0x%x)", eport_id);
 
-	std::lock_guard lock(id_manager::g_mutex);
-
-	const auto port = idm::check_unlocked<lv2_obj, lv2_event_port>(eport_id);
+	const auto port = idm::lock<lv2_obj, lv2_event_port>(eport_id);
 
 	if (!port)
 	{
 		return CELL_ESRCH;
 	}
 
-	if (port->queue.expired())
+	if (!port->queue)
 	{
 		return CELL_ENOTCONN;
 	}
 
 	// TODO: return CELL_EBUSY if necessary (can't detect the condition)
 
-	port->queue.reset();
+	port->queue.clear();
 
 	return CELL_OK;
 }

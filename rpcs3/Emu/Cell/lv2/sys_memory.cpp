@@ -10,7 +10,7 @@ LOG_CHANNEL(sys_memory);
 //
 static shared_mutex s_memstats_mtx;
 
-lv2_memory_alloca::lv2_memory_alloca(u32 size, u32 align, u64 flags, const std::shared_ptr<lv2_memory_container>& ct)
+lv2_memory_alloca::lv2_memory_alloca(u32 size, u32 align, u64 flags, const  idm::ref_object<lv2_memory_container>& ct)
 	: size(size)
 	, align(align)
 	, flags(flags)
@@ -94,31 +94,22 @@ error_code sys_memory_allocate_from_container(u32 size, u32 cid, u64 flags, vm::
 		return {CELL_EALIGN, size};
 	}
 
-	const auto ct = idm::get<lv2_memory_container>(cid, [&](lv2_memory_container& ct) -> CellError
-	{
-		// Try to get "physical memory"
-		if (!ct.take(size))
-		{
-			return CELL_ENOMEM;
-		}
+	const auto ct = idm::get<lv2_memory_container>(cid);
 
-		return {};
-	});
+	// Try to get "physical memory"
+	if (!ct->take(size))
+	{
+		return CELL_ENOMEM;
+	}
 
 	if (!ct)
 	{
 		return CELL_ESRCH;
 	}
 
-	if (ct.ret)
-	{
-		return ct.ret;
-	}
-
 	// Create phantom memory object
-	const auto mem = idm::make_ptr<lv2_memory_alloca>(size, align, flags, ct.ptr);
-
-	if (const auto area = vm::get(align == 0x10000 ? vm::user64k : vm::user1m, 0, ::align(size, 0x10000000)))
+	if (const auto mem = idm::make_ptr<lv2_memory_alloca>(size, align, flags, ct);
+		const auto area = vm::get(align == 0x10000 ? vm::user64k : vm::user1m, 0, ::align(size, 0x10000000)))
 	{
 		if (u32 addr = area->alloc(size, mem->align, &mem->shm))
 		{

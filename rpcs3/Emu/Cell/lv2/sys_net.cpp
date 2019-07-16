@@ -362,9 +362,7 @@ s32 sys_net_bnet_accept(ppu_thread& ppu, s32 s, vm::ptr<sys_net_sockaddr> addr, 
 		return 0;
 	}
 
-	auto newsock = std::make_shared<lv2_socket>(native_socket);
-
-	result = idm::import_existing<lv2_socket>(newsock);
+	result = idm::make<lv2_socket>(native_socket);
 
 	if (result == id_manager::id_traits<lv2_socket>::invalid)
 	{
@@ -1440,7 +1438,7 @@ s32 sys_net_bnet_socket(ppu_thread& ppu, s32 family, s32 type, s32 protocol)
 		return -get_last_error(false);
 	}
 
-	const s32 s = idm::import_existing<lv2_socket>(std::make_shared<lv2_socket>(native_socket));
+	const s32 s = idm::make<lv2_socket>(native_socket);
 
 	if (s == id_manager::id_traits<lv2_socket>::invalid)
 	{

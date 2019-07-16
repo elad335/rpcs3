@@ -75,7 +75,7 @@ struct sys_event_t
 // Source, data1, data2, data3
 using lv2_event = std::tuple<u64, u64, u64, u64>;
 
-struct lv2_event_queue final : public lv2_obj
+struct lv2_event_queue final : lv2_obj
 {
 	static const u32 id_base = 0x8d000000;
 
@@ -116,7 +116,7 @@ struct lv2_event_port final : lv2_obj
 	const s32 type; // Port type, must be SYS_EVENT_PORT_LOCAL
 	const u64 name; // Event source (generated from id and process id if not set)
 
-	std::weak_ptr<lv2_event_queue> queue; // Event queue this port is connected to
+	idm::weak_ref<lv2_obj, lv2_event_queue> queue; // Event queue this port is connected to
 
 	lv2_event_port(s32 type, u64 name)
 		: type(type)

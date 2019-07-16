@@ -923,7 +923,7 @@ void spu_int_ctrl_t::set(u64 ints)
 	// notify if at least 1 bit was set
 	if (ints && ~stat.fetch_or(ints) & ints && tag)
 	{
-		reader_lock rlock(id_manager::g_mutex);
+		//reader_lock rlock(id_manager::g_mutex);
 
 		if (tag)
 		{

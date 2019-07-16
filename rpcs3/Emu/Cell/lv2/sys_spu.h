@@ -242,21 +242,7 @@ struct lv2_spu_group
 	std::weak_ptr<lv2_event_queue> ep_exception; // TODO: SYS_SPU_THREAD_GROUP_EVENT_EXCEPTION
 	std::weak_ptr<lv2_event_queue> ep_sysmodule; // TODO: SYS_SPU_THREAD_GROUP_EVENT_SYSTEM_MODULE
 
-	lv2_spu_group(std::string name, u32 num, s32 prio, s32 type, u32 ct)
-		: id(idm::last_id())
-		, name(name)
-		, max_num(num)
-		, init(0)
-		, prio(prio)
-		, type(type)
-		, ct(ct)
-		, run_state(SPU_THREAD_GROUP_STATUS_NOT_INITIALIZED)
-		, exit_status(0)
-		, join_state(0)
-		, running(0)
-		, stop_count(0)
-	{
-	}
+	lv2_spu_group(std::string name, u32 num, s32 prio, s32 type, u32 ct);
 
 	void send_run_event(u64 data1, u64 data2, u64 data3)
 	{

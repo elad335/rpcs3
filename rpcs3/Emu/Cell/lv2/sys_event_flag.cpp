@@ -1,4 +1,4 @@
-#include "stdafx.h"
+﻿#include "stdafx.h"
 #include "sys_event_flag.h"
 
 #include "Emu/System.h"
@@ -162,6 +162,8 @@ error_code sys_event_flag_wait(ppu_thread& ppu, u32 id, u64 bitptn, u32 mode, vm
 		return CELL_OK;
 	}
 
+	flag--;
+
 	while (!ppu.state.test_and_reset(cpu_flag::signal))
 	{
 		if (ppu.is_stopped())
@@ -175,6 +177,7 @@ error_code sys_event_flag_wait(ppu_thread& ppu, u32 id, u64 bitptn, u32 mode, vm
 
 			if (passed >= timeout)
 			{
+				flag++;
 				std::lock_guard lock(flag->mutex);
 
 				if (!flag->unqueue(flag->sq, &ppu))
@@ -183,9 +186,9 @@ error_code sys_event_flag_wait(ppu_thread& ppu, u32 id, u64 bitptn, u32 mode, vm
 					continue;
 				}
 
-				flag->waiters--;
 				ppu.gpr[3] = CELL_ETIMEDOUT;
 				ppu.gpr[6] = flag->pattern;
+				flag->waiters--;
 				break;
 			}
 
@@ -195,6 +198,11 @@ error_code sys_event_flag_wait(ppu_thread& ppu, u32 id, u64 bitptn, u32 mode, vm
 		{
 			thread_ctrl::wait();
 		}
+	}
+
+	if (ppu.gpr[3] == CELL_OK)
+	{
+		flag++;
 	}
 
 	if (ppu.test_stopped())

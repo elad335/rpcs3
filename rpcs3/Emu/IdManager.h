@@ -6,6 +6,52 @@
 #include <memory>
 #include <vector>
 
+#include "Emu/Cell/lv2/sys_cond.h"
+#include "Emu/Cell/lv2/sys_event_flag.h"
+#include "Emu/Cell/lv2/sys_event.h"
+#include "Emu/Cell/lv2/sys_interrupt.h"
+#include "Emu/Cell/lv2/sys_lwcond.h"
+#include "Emu/Cell/lv2/sys_lwmutex.h"
+#include "Emu/Cell/lv2/sys_mmapper.h"
+#include "Emu/Cell/lv2/sys_mutex.h"
+#include "Emu/Cell/lv2/sys_overlay.h"
+#include "Emu/Cell/lv2/sys_prx.h"
+#include "Emu/Cell/lv2/sys_rwlock.h"
+#include "Emu/Cell/lv2/sys_semaphore.h"
+#include "Emu/Cell/lv2/sys_timer.h"
+
+static constexpr size_t lv2_obj_size = 
+std::max<size_t>(sizeof(lv2_cond),
+std::max<size_t>(sizeof(lv2_event_flag),
+std::max<size_t>(sizeof(lv2_event_port),
+std::max<size_t>(sizeof(lv2_event_queue),
+std::max<size_t>(sizeof(lv2_int_tag),
+std::max<size_t>(sizeof(lv2_int_serv),
+std::max<size_t>(sizeof(lv2_lwcond),
+std::max<size_t>(sizeof(lv2_lwmutex),
+std::max<size_t>(sizeof(lv2_overlay),
+std::max<size_t>(sizeof(lv2_prx),
+std::max<size_t>(sizeof(lv2_rwlock),
+std::max<size_t>(sizeof(lv2_sema),
+std::max<size_t>(sizeof(lv2_timer_context), 0)))))))))))));
+
+static constexpr size_t lv2_obj_align = 
+std::max<size_t>(alignof(lv2_cond),
+std::max<size_t>(alignof(lv2_event_flag),
+std::max<size_t>(alignof(lv2_event_port),
+std::max<size_t>(alignof(lv2_event_queue),
+std::max<size_t>(alignof(lv2_int_tag),
+std::max<size_t>(alignof(lv2_int_serv),
+std::max<size_t>(alignof(lv2_lwcond),
+std::max<size_t>(alignof(lv2_lwmutex),
+std::max<size_t>(alignof(lv2_overlay),
+std::max<size_t>(alignof(lv2_prx),
+std::max<size_t>(alignof(lv2_rwlock),
+std::max<size_t>(alignof(lv2_sema),
+std::max<size_t>(alignof(lv2_timer_context), 0)))))))))))));
+
+extern atomic_t<u64> idm_count;
+
 // Helper namespace
 namespace id_manager
 {
@@ -48,89 +94,49 @@ namespace id_manager
 		// If T2 contains id_type type, T must be equal to it
 	};
 
-	class typeinfo
+	template<typename T>
+	class typeinfo_t
 	{
-		// Global variable for each registered type
-		template <typename T>
+	public:
 		struct registered
 		{
-			static const u32 index;
+			shared_mutex refmtx;
+			volatile u32 alloc_state{};
+			volatile u64 creation_count = 0;
+			u32 type;
+			u32 id;
+			alignas(std::is_same_v<T, lv2_obj> ? lv2_obj_align : alignof(T)) 
+			char obj[std::is_same_v<T, lv2_obj> ? lv2_obj_size : sizeof(T)]{};
 		};
 
-		// Increment type counter
-		static u32 add_type(u32 i)
-		{
-			static atomic_t<u32> g_next{0};
+		template<typename T>
+		registered id_array[id_traits::count];
 
-			return g_next.fetch_add(i);
-		}
-
-	public:
-		// Get type index
-		template <typename T>
-		static inline u32 get_index()
-		{
-			return registered<T>::index;
-		}
-
-		// Get type count
-		static inline u32 get_count()
-		{
-			return add_type(0);
-		}
+		atomic_t<u32> max_index = 0;
+		shared_mutex g_mutex;
 	};
 
-	template <typename T>
-	const u32 typeinfo::registered<T>::index = typeinfo::add_type(1);
+	template<typename T>
+	static typeinfo_t<T> typeinfo;
 
-	// ID value with additional type stored
-	class id_key
-	{
-		u32 m_value;           // ID value
-		u32 m_type;            // True object type
-
-	public:
-		id_key() = default;
-
-		id_key(u32 value, u32 type)
-			: m_value(value)
-			, m_type(type)
-		{
-		}
-
-		u32 value() const
-		{
-			return m_value;
-		}
-
-		u32 type() const
-		{
-			return m_type;
-		}
-
-		operator u32() const
-		{
-			return m_value;
-		}
-	};
-
-	using id_map = std::vector<std::pair<id_key, std::shared_ptr<void>>>;
+	//using id_map = std::vector<std::pair<id_key, std::shared_ptr<void>>>;
 }
 
 // Object manager for emulated process. Multiple objects of specified arbitrary type are given unique IDs.
 class idm
 {
+	template <typename T>
+	using entry_type = id_manager::typeinfo_t<T>::registered;
+
+public:
+	enum entry_state : u64 { dealloc = 0, withdraw = 1, min_allowed };
+
+private:
 	// Last allocated ID for constructors
 	static thread_local u32 g_id;
 
-	// Type Index -> ID -> Object. Use global since only one process is supported atm.
-	static std::vector<id_manager::id_map> g_map;
-
-	template <typename T>
-	static inline u32 get_type()
-	{
-		return id_manager::typeinfo::get_index<T>();
-	}
+	// Checks if id entry is taken
+	template<bool for_creation = false> static bool check_state(u64);
 
 	template <typename T>
 	static constexpr u32 get_index(u32 id)
@@ -170,68 +176,55 @@ class idm
 		using void_type   = void;
 	};
 
-	// Helper type: pointer + return value propagated
-	template <typename T, typename RT>
-	struct return_pair
-	{
-		std::shared_ptr<T> ptr;
-		RT ret;
-
-		explicit operator bool() const
-		{
-			return ptr.operator bool();
-		}
-
-		T* operator->() const
-		{
-			return ptr.get();
-		}
-	};
-
-	// Unsafe specialization (not refcounted)
-	template <typename T, typename RT>
-	struct return_pair<T*, RT>
-	{
-		T* ptr;
-		RT ret;
-
-		explicit operator bool() const
-		{
-			return ptr != nullptr;
-		}
-
-		T* operator->() const
-		{
-			return ptr;
-		}
-	};
-
 	// Prepare new ID (returns nullptr if out of resources)
-	static id_manager::id_map::pointer allocate_id(const id_manager::id_key& info, u32 base, u32 step, u32 count);
+	template<typename T> static u32 allocate_id(u32 base, u32 step, u32 count);
 
 	// Find ID (additionally check type if types are not equal)
-	template <typename T, typename Type>
-	static id_manager::id_map::pointer find_id(u32 id)
+	template <typename T, typename Type, bool exclusive = false, bool lock = true>
+	static entry_type<T>* find_id(u32 id)
 	{
 		static_assert(id_manager::id_verify<T, Type>::value, "Invalid ID type combination");
 
 		const u32 index = get_index<Type>(id);
 
-		auto& vec = g_map[get_type<T>()];
-
-		if (index >= vec.size() || index >= id_manager::id_traits<Type>::count)
+		if (index >= id_manager::id_traits<Type>::count)
 		{
 			return nullptr;
 		}
 
-		auto& data = vec[index];
+		auto& data = id_manager::typeinfo<T>.id_array[index];
 
-		if (data.second)
+		if constexpr (exclusive)
 		{
-			if (std::is_same<T, Type>::value || data.first.type() == get_type<Type>())
+			data.refmtx.lock();
+		}
+		else if constexpr (lock)
+		{
+			data.refmtx.lock_shared();
+		}
+
+		static_assert(lock || std::is_same<T, Type>::value, HERE);
+
+		if (check_state(data.alloc_state))
+		{
+			if constexpr (std::is_same<T, Type>::value)
 			{
 				return &data;
 			}
+
+			if (data.id == id)
+			{
+				return &data;
+			}
+		}
+
+		if constexpr (exclusive)
+		{
+			data.refmtx.unlock();
+		}
+		else if constexpr (lock)
+		{
+			data.refmtx.unlock_shared();
 		}
 
 		return nullptr;
@@ -243,23 +236,17 @@ class idm
 	{
 		static_assert(id_manager::id_verify<T, Type>::value, "Invalid ID type combination");
 
-		// ID info
-		const id_manager::id_key info{get_type<T>(), get_type<Type>()};
-
 		// ID traits
 		using traits = id_manager::id_traits<Type>;
 
-		// Allocate new id
-		std::lock_guard lock(id_manager::g_mutex);
-
-		if (auto* place = allocate_id(info, traits::base, traits::step, traits::count))
+		if (u32 index = allocate_id<T>(traits::base, traits::step, traits::count); index < traits::count)
 		{
 			// Get object, store it
-			place->second = provider();
+			const bool success = provider(&id_manager::typeinfo<T>.id_array[index].obj[0]);
 
-			if (place->second)
+			if (success)
 			{
-				return place;
+				return &id_manager::typeinfo<T>.id_array[index];
 			}
 		}
 
@@ -279,25 +266,291 @@ public:
 		return g_id;
 	}
 
-	// Add a new ID of specified type with specified constructor arguments (returns object or nullptr)
-	template <typename T, typename Make = T, typename... Args>
-	static inline std::enable_if_t<std::is_constructible<Make, Args...>::value, std::shared_ptr<Make>> make_ptr(Args&&... args)
+	template <typename T, typename Get = T>
+	class lock_object
 	{
-		if (auto pair = create_id<T, Make>([&] { return std::make_shared<Make>(std::forward<Args>(args)...); }))
+	protected:
+		entry_type<T>* control;
+
+	public:
+		lock_object() = default; 
+
+		~lock_object()
 		{
-			return {pair->second, static_cast<Make*>(pair->second.get())};
+			if (control) control->refmtx.unlock();
 		}
 
-		return nullptr;
+		void operator ++(int) const noexcept
+ 		{
+			control->refmtx.lock();
+		}
+
+		void operator --(int) const noexcept
+ 		{
+			control->refmtx.unlock();
+		}
+
+		explicit operator bool() const
+		{
+			return !!control;
+		}
+
+		Get* operator ->() const
+		{
+			return reinterpret_cast<Get*>(+control->obj);
+		}
+
+		Get& operator *() const
+		{
+			return *(operator ->());
+		}
+
+		ref_object& operator =(ref_object& other)
+		{
+			control = other.control;
+		}
+	};
+
+	template <typename Result, typename T, typename Get = T>
+	class lock_object_res
+	{
+		entry_type<T>* const control;
+
+	public:
+		const Result ret;
+
+		lock_object_res() = default; 
+
+		~lock_object_res()
+		{
+			if (control) control->refmtx.lock();
+		}
+
+		void operator ++(int) const noexcept
+ 		{
+			control->refmtx.lock();
+		}
+
+		void operator --(int) const noexcept
+ 		{
+			control->refmtx.unlock();
+		}
+
+		explicit operator bool() const
+		{
+			return !!control;
+		}
+
+		Get* operator ->() const
+		{
+			return reinterpret_cast<Get*>(+control->obj);
+		}
+
+		Get& operator *() const
+		{
+			return *(operator ->());
+		}
+
+		u32 id() const
+		{
+			return control->id;
+		}
+	};
+
+	template <typename T, typename Get = T>
+	class ref_object
+	{
+	protected:
+		entry_type<T>* control;
+
+	public:
+		ref_object() = default; 
+
+		~ref_object()
+		{
+			if (control) control->refmtx.unlock_shared();
+		}
+
+		void operator ++(int) const noexcept
+ 		{
+			control->refmtx.lock_shared();
+		}
+
+		void operator --(int) const noexcept
+ 		{
+			control->refmtx.unlock_shared();
+		}
+
+		explicit operator bool() const
+		{
+			return !!control;
+		}
+
+		Get* operator ->() const
+		{
+			return reinterpret_cast<Get*>(+control->obj);
+		}
+
+		Get& operator *() const
+		{
+			return *(operator ->());
+		}
+
+		ref_object& operator = (ref_object& other)
+		{
+			control = other.control;
+			return *this;
+		}
+
+		u32 id() const
+		{
+			return control->id;
+		}
+	};
+
+	template <typename Result, typename T, typename Get = T>
+	class ref_object_res
+	{
+		entry_type<T>* const control;
+
+	public:
+		const Result ret;
+
+		ref_object_res() = default; 
+
+		~ref_object_res()
+		{
+			if (control) control->refmtx.unlock_shared();
+		}
+
+		void operator ++(int) const noexcept
+ 		{
+			control->refmtx.lock_shared();
+		}
+
+		void operator --(int) const noexcept
+ 		{
+			control->refmtx.unlock_shared();
+		}
+
+		explicit operator bool() const
+		{
+			return !!control;
+		}
+
+		Get* operator ->() const
+		{
+			return reinterpret_cast<Get*>(+control->obj);
+		}
+
+		Get& operator *() const
+		{
+			return *(operator ->());
+		}
+	};
+
+	template <typename Result>
+	class raw_object_res
+	{
+		void* const control;
+
+	public:
+		const Result ret;
+
+		raw_object_res() = default; 
+
+		explicit operator bool() const
+		{
+			return !!control;
+		}
+	};
+
+	template <typename T, typename Get = T>
+	class weak_ref
+	{
+		friend class ref_object;
+		friend class lock_object;
+
+		entry_type<T>* control;
+		u64 creation_count;
+	public:
+		weak_ref()
+			: control({})
+			, creation_count({})
+		{
+		}
+
+		weak_ref(ref_object<T, Get>& ref)
+			: control(ref.control)
+			, creation_count(ref.control->creation_count)
+		{
+		}
+
+		ref_object<T, Get> ref() const
+		{
+			control->refmtx.lock_shared();
+
+			if (control->creation_count != creation_count || !idm::check_state(control->alloc_state))
+			{
+				control->refmtx.unlock_shared();
+				return {};
+			}
+	
+			return {control};
+		}
+
+		lock_object<T, Get> lock() const
+		{
+			control->refmtx.lock();
+
+			if (control->creation_count != creation_count || !idm::check_state(control->alloc_state))
+			{
+				control->refmtx.unlock();
+				return {};
+			}
+
+			return {control};
+		}
+
+		operator bool() const
+		{
+			return !!control &&
+				(volatile u64&)control->creation_count == creation_count && idm::check_state(control->alloc_state);
+		}
+
+		void clear()
+		{
+			control = {};
+		}
+
+		weak_ref& operator =(ref_object& other)
+		{
+			control = other.control;
+			if (control) creation_count = control->creation_count;
+			return *this;
+		}
+	};
+
+	// Add a new ID of specified type with specified constructor arguments (returns object or nullptr)
+	template <typename T, typename Make = T, typename... Args>
+	static inline std::enable_if_t<std::is_constructible<Make, Args...>::value, lock_object<T, Make>> make_ptr(Args&&... args)
+	{
+		if (auto obj = create_id<T, Make>([&] (Make& obj) { ::new(&obj) Make(std::forward<Args>(args)...); return true; }))
+		{
+			return {obj};
+		}
+
+		return {};
 	}
 
 	// Add a new ID of specified type with specified constructor arguments (returns id)
 	template <typename T, typename Make = T, typename... Args>
 	static inline std::enable_if_t<std::is_constructible<Make, Args...>::value, u32> make(Args&&... args)
 	{
-		if (auto pair = create_id<T, Make>([&] { return std::make_shared<Make>(std::forward<Args>(args)...); }))
+		if (auto obj = create_id<T, Make>([&] (Make& obj) { ::new(&obj) Make(std::forward<Args>(args)...); return true; }))
 		{
-			return pair->first;
+			obj->refmtx.unlock();
+			return last_id();
 		}
 
 		return id_manager::id_traits<Make>::invalid;
@@ -305,139 +558,130 @@ public:
 
 	// Add a new ID for an existing object provided (returns new id)
 	template <typename T, typename Made = T>
-	static inline u32 import_existing(const std::shared_ptr<T>& ptr)
+	static inline u32 import_existing(T&& obj)
 	{
-		if (auto pair = create_id<T, Made>([&] { return ptr; }))
+		if (auto found = create_id<T, Made>([&] { return obj; }))
 		{
-			return pair->first;
+			found->refmtx.unlock();
+			return last_id();
 		}
 
 		return id_manager::id_traits<Made>::invalid;
 	}
 
 	// Add a new ID for an object returned by provider()
-	template <typename T, typename Made = T, typename F, typename = std::invoke_result_t<F>>
+	template <typename T, typename Made = T, typename F, typename = std::invoke_result_t<F, Made&>>
 	static inline u32 import(F&& provider)
 	{
-		if (auto pair = create_id<T, Made>(std::forward<F>(provider)))
+		if (const auto obj = create_id<T, Made>(std::forward<F>(provider)))
 		{
-			return pair->first;
+			obj->refmtx.unlock();
+			return last_id();
 		}
 
 		return id_manager::id_traits<Made>::invalid;
 	}
 
-	// Access the ID record without locking (unsafe)
-	template <typename T, typename Get = T>
-	static inline id_manager::id_map::pointer find_unlocked(u32 id)
-	{
-		return find_id<T, Get>(id);
-	}
-
 	// Check the ID without locking (can be called from other method)
 	template <typename T, typename Get = T>
-	static inline Get* check_unlocked(u32 id)
+	static inline bool check(u32 id)
 	{
-		if (const auto found = find_id<T, Get>(id))
+		if (const auto found = find_id<T, Get, false, !std::is_same<T, Get>::value>(id))
 		{
-			return static_cast<Get*>(found->second.get());
+			if constexpr (!std::is_same<T, Get>::value)
+			{
+				if (found) found->refmtx.unlock_shared();
+			}
+
+			return !!found;
 		}
 
 		return nullptr;
 	}
 
-	// Check the ID
-	template <typename T, typename Get = T>
-	static inline Get* check(u32 id)
-	{
-		reader_lock lock(id_manager::g_mutex);
-
-		return check_unlocked<T, Get>(id);
-	}
-
 	// Check the ID, access object under shared lock
 	template <typename T, typename Get = T, typename F, typename FRT = std::invoke_result_t<F, Get&>>
-	static inline auto check(u32 id, F&& func)
+	static inline std::conditional_t<std::is_void_v<FRT>, bool, raw_object_res<FRT>> check(u32 id, F&& func)
 	{
-		reader_lock lock(id_manager::g_mutex);
-
-		if (const auto ptr = check_unlocked<T, Get>(id))
+		if (const auto ptr = find_id<T, Get>(id))
 		{
 			if constexpr (!std::is_void_v<FRT>)
 			{
-				return return_pair<Get*, FRT>{ptr, func(*ptr)};
+				const auto res = func(*ptr);
+				ptr->refmtx.unlock_shared();
+				return {true, std::move(res)};
 			}
 			else
 			{
 				func(*ptr);
-				return ptr;
+				ptr->refmtx.unlock_shared();
+				return true;
 			}
 		}
 
 		if constexpr (!std::is_void_v<FRT>)
 		{
-			return return_pair<Get*, FRT>{nullptr};
+			return {};
 		}
 		else
 		{
-			return static_cast<Get*>(nullptr);
+			return false;
 		}
 	}
 
 	// Get the object without locking (can be called from other method)
 	template <typename T, typename Get = T>
-	static inline std::shared_ptr<Get> get_unlocked(u32 id)
+	static inline ref_object<T, Get> get_unlocked(u32 id)
 	{
 		const auto found = find_id<T, Get>(id);
 
-		if (UNLIKELY(found == nullptr))
-		{
-			return nullptr;
-		}
-
-		return {found->second, static_cast<Get*>(found->second.get())};
+		return {found};
 	}
 
 	// Get the object
 	template <typename T, typename Get = T>
-	static inline std::shared_ptr<Get> get(u32 id)
+	static inline ref_object<T, Get> get(u32 id)
 	{
-		reader_lock lock(id_manager::g_mutex);
+		reader_lock lock(id_manager::typeinfo<T>.g_mutex);
 
 		const auto found = find_id<T, Get>(id);
 
-		if (UNLIKELY(found == nullptr))
-		{
-			return nullptr;
-		}
-
-		return {found->second, static_cast<Get*>(found->second.get())};
+		return {found};
 	}
 
 	// Get the object, access object under reader lock
 	template <typename T, typename Get = T, typename F, typename FRT = std::invoke_result_t<F, Get&>>
-	static inline std::conditional_t<std::is_void_v<FRT>, std::shared_ptr<Get>, return_pair<Get, FRT>> get(u32 id, F&& func)
+	static inline std::conditional_t<std::is_void_v<FRT>, ref_object<T, Get>, ref_object_res<FRT, T, Get>> get(u32 id, F&& func)
 	{
-		reader_lock lock(id_manager::g_mutex);
+		reader_lock lock(id_manager::typeinfo<T>.g_mutex);
 
 		const auto found = find_id<T, Get>(id);
 
 		if (UNLIKELY(found == nullptr))
 		{
-			return {nullptr};
+			return {};
 		}
 
-		const auto ptr = static_cast<Get*>(found->second.get());
+		const auto ptr = reinterpret_cast<Get*>(+found->obj);
 
 		if constexpr (std::is_void_v<FRT>)
 		{
 			func(*ptr);
-			return {found->second, ptr};
+			return {ptr};
 		}
 		else
 		{
-			return {{found->second, ptr}, func(*ptr)};
+			return {ptr, func(*ptr)};
 		}
+	}
+
+	// Get the object with a writer lock
+	template <typename T, typename Get = T>
+	static inline lock_object<T, Get> lock(u32 id)
+	{
+		const auto found = find_id<T, Get, true>(id);
+
+		return {found};
 	}
 
 	// Access all objects of specified type. Returns the number of objects processed.
@@ -446,20 +690,29 @@ public:
 	{
 		static_assert(id_manager::id_verify<T, Get>::value, "Invalid ID type combination");
 
-		reader_lock lock(id_manager::g_mutex);
+		using object_type = typename function_traits<FT>::object_type;
 
 		u32 result = 0;
 
-		for (auto& id : g_map[get_type<T>()])
+		for (auto& id : id_manager::typeinfo<T>.id_array)
 		{
-			if (id.second)
+			if (!check_state(id.alloc_state))
 			{
-				if (std::is_same<T, Get>::value || id.first.type() == get_type<Get>())
+				continue;
+			}
+
+			id.refmtx.lock_shared();
+
+			if (check_state(id.alloc_state))
+			{
+				if (std::is_same<T, Type>::value || id.type == id_manager::id_traits<Get>::base)
 				{
-					func(id.first, *static_cast<typename function_traits<FT>::object_type*>(id.second.get()));
+					func(id.id, *reinterpret_cast<object_type*>(+id.obj));
 					result++;
 				}
 			}
+
+			id.refmtx.unlock_shared();
 		}
 
 		return result;
@@ -467,89 +720,82 @@ public:
 
 	// Access all objects of specified type. If function result evaluates to true, stop and return the object and the value.
 	template <typename T, typename Get = T, typename F, typename FT = decltype(&std::decay_t<F>::operator()), typename FRT = typename function_traits<FT>::result_type>
-	static inline auto select(F&& func)
+	static inline std::conditional_t<std::is_void_v<FRT>, ref_object<T, Get>, ref_object_res<FRT, T, Get>> select(F&& func)
 	{
 		static_assert(id_manager::id_verify<T, Get>::value, "Invalid ID type combination");
 
 		using object_type = typename function_traits<FT>::object_type;
-		using result_type = return_pair<object_type, FRT>;
 
-		reader_lock lock(id_manager::g_mutex);
-
-		for (auto& id : g_map[get_type<T>()])
+		for (auto& id : id_manager::typeinfo<T>.id_array)
 		{
-			if (auto ptr = static_cast<object_type*>(id.second.get()))
+			if (!check_state(id.alloc_state))
 			{
-				if (std::is_same<T, Get>::value || id.first.type() == get_type<Get>())
+				continue;
+			}
+
+			id.refmtx.lock_shared();
+
+			if (check_state(id.alloc_state))
+			{
+				const auto ptr = reinterpret_cast<object_type*>(+id.obj);
+
+				if (std::is_same<T, Get>::value || id.type == id_manager::id_traits<Get>::base)
 				{
-					if (FRT result = func(id.first, *ptr))
+					if (FRT result = func(id.id, *ptr))
 					{
-						return result_type{{id.second, ptr}, std::move(result)};
+						return {ptr, std::move(result)};
 					}
 				}
 			}
+
+			id.refmtx.unlock_shared();
 		}
 
-		return result_type{nullptr};
+		return {};
 	}
 
 	// Remove the ID
 	template <typename T, typename Get = T>
 	static inline bool remove(u32 id)
 	{
-		std::shared_ptr<void> ptr;
+		if (const auto found = find_id<T, Get, true>(id))
 		{
-			std::lock_guard lock(id_manager::g_mutex);
-
-			if (const auto found = find_id<T, Get>(id))
-			{
-				ptr = std::move(found->second);
-			}
-			else
-			{
-				return false;
-			}
+			// Reset state
+			found->id = id_manager::id_traits<Get>::invalid;
+			found->alloc_state = entry_state::dealloc;
+			found->refmtx.unlock();
+			return true;
 		}
 
-		return true;
+		return false;
 	}
 
 	// Remove the ID and return the object
 	template <typename T, typename Get = T>
-	static inline std::shared_ptr<Get> withdraw(u32 id)
+	static inline lock_object<T, Get> withdraw(u32 id)
 	{
-		std::shared_ptr<void> ptr;
+		if (const auto found = find_id<T, Get>(id))
 		{
-			std::lock_guard lock(id_manager::g_mutex);
-
-			if (const auto found = find_id<T, Get>(id))
-			{
-				ptr = std::move(found->second);
-			}
-			else
-			{
-				return nullptr;
-			}
+			found->id = id_manager::id_traits<Get>::invalid;
+			found->alloc_state = entry_state::dealloc;
+			return {found};
 		}
 
-		return {ptr, static_cast<Get*>(ptr.get())};
+		return {};
 	}
 
 	// Remove the ID after accessing the object under writer lock, return the object and propagate return value
 	template <typename T, typename Get = T, typename F, typename FRT = std::invoke_result_t<F, Get&>>
-	static inline std::conditional_t<std::is_void_v<FRT>, std::shared_ptr<Get>, return_pair<Get, FRT>> withdraw(u32 id, F&& func)
+	static inline std::conditional_t<std::is_void_v<FRT>, lock_object<T, Get>, lock_object_res<FRT, T, Get>> withdraw(u32 id, F&& func)
 	{
-		std::unique_lock lock(id_manager::g_mutex);
-
-		if (const auto found = find_id<T, Get>(id))
+		if (const auto found = find_id<T, Get, true>(id))
 		{
-			const auto _ptr = static_cast<Get*>(found->second.get());
+			const auto _ptr = reinterpret_cast<Get*>(+found->obj);
 
 			if constexpr (std::is_void_v<FRT>)
 			{
 				func(*_ptr);
-				std::shared_ptr<void> ptr = std::move(found->second);
-				return {ptr, static_cast<Get*>(ptr.get())};
+				return {found};
 			}
 			else
 			{
@@ -557,30 +803,26 @@ public:
 
 				if (ret)
 				{
+					found->refmtx.unlock();
+
 					// If return value evaluates to true, don't delete the object (error code)
-					return {{found->second, _ptr}, std::move(ret)};
+					return {nullptr, std::move(ret)};
 				}
 
-				std::shared_ptr<void> ptr = std::move(found->second);
-				return {{ptr, static_cast<Get*>(ptr.get())}, std::move(ret)};
+				found->id = id_manager::id_traits<Make>::invalid;
+				found->alloc_state = entry_state::withdraw;
+				return {found, std::move(ret)};
 			}
 		}
 
-		return {nullptr};
+		return {};
 	}
 };
 
 // Object manager for emulated process. One unique object per type, or zero.
 class fxm
 {
-	// Type Index -> Object. Use global since only one process is supported atm.
-	static std::vector<std::shared_ptr<void>> g_vec;
-
-	template <typename T>
-	static inline u32 get_type()
-	{
-		return id_manager::typeinfo::get_index<T>();
-	}
+	friend class idm;
 
 public:
 	// Initialize object manager

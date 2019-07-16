@@ -43,10 +43,13 @@ void _sys_ppu_thread_exit(ppu_thread& ppu, u64 errorcode)
 	}
 	else if (jid != 0)
 	{
-		std::lock_guard lock(id_manager::g_mutex);
+		// Wait for all accessers to close
+		idm::lock<named_thread<ppu_thread>>(ppu.id);
+
+		const auto ppu = idm::get<named_thread<ppu_thread>>(jid);
 
 		// Schedule joiner and unqueue
-		lv2_obj::awake(*idm::check_unlocked<named_thread<ppu_thread>>(jid), -2);
+		lv2_obj::awake(*ppu, -2);
 	}
 
 	// Unqueue
@@ -69,6 +72,8 @@ error_code sys_ppu_thread_join(ppu_thread& ppu, u32 thread_id, vm::ptr<u64> vptr
 
 	sys_ppu_thread.trace("sys_ppu_thread_join(thread_id=0x%x, vptr=*0x%x)", thread_id, vptr);
 
+	do
+	{
 	const auto thread = idm::get<named_thread<ppu_thread>>(thread_id, [&](ppu_thread& thread) -> CellError
 	{
 		CellError result = thread.joiner.atomic_op([&](u32& value) -> CellError
@@ -117,8 +122,13 @@ error_code sys_ppu_thread_join(ppu_thread& ppu, u32 thread_id, vm::ptr<u64> vptr
 		return thread.ret;
 	}
 
+	thread--;
+
 	// Wait for cleanup
-	(*thread.ptr)();
+	(*thread)();
+
+	}
+	while(0);
 
 	if (ppu.test_stopped())
 	{
@@ -126,7 +136,7 @@ error_code sys_ppu_thread_join(ppu_thread& ppu, u32 thread_id, vm::ptr<u64> vptr
 	}
 
 	// Cleanup
-	idm::remove<named_thread<ppu_thread>>(thread->id);
+	const auto _thread = idm::withdraw<named_thread<ppu_thread>>(thread_id);
 
 	if (!vptr)
 	{
@@ -134,7 +144,7 @@ error_code sys_ppu_thread_join(ppu_thread& ppu, u32 thread_id, vm::ptr<u64> vptr
 	}
 
 	// Get the exit status from the register
-	*vptr = thread->gpr[3];
+	*vptr = _thread->gpr[3];
 	return CELL_OK;
 }
 
@@ -316,7 +326,7 @@ error_code _sys_ppu_thread_create(vm::ptr<u64> thread_id, vm::ptr<ppu_thread_par
 		return CELL_ENOMEM;
 	}
 
-	const u32 tid = idm::import<named_thread<ppu_thread>>([&]()
+	const u32 tid = idm::import<named_thread<ppu_thread>>([&](named_thread<ppu_thread>& ppu_thr)
 	{
 		const u32 tid = idm::last_id();
 
@@ -337,7 +347,8 @@ error_code _sys_ppu_thread_create(vm::ptr<u64> thread_id, vm::ptr<ppu_thread_par
 		p.arg0 = arg;
 		p.arg1 = unk;
 
-		return std::make_shared<named_thread<ppu_thread>>(full_name, p, ppu_name, prio, 1 - static_cast<int>(flags & 3));
+		::new(&ppu_thr) named_thread<ppu_thread>(full_name, p, ppu_name, prio, 1 - static_cast<int>(flags & 3));
+		return true;
 	});
 
 	if (!tid)

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "sys_event.h"
 
@@ -21,6 +21,8 @@ struct sys_timer_information_t
 	be_t<u32> pad;
 };
 
+class idm;
+
 struct lv2_timer_context : lv2_obj
 {
 	static const u32 id_base = 0x11000000;
@@ -31,7 +33,7 @@ struct lv2_timer_context : lv2_obj
 	shared_mutex mutex;
 	atomic_t<u32> state{SYS_TIMER_STATE_STOP};
 
-	std::weak_ptr<lv2_event_queue> port;
+	idm::weak_ref<lv2_obj, lv2_event_queue> port; // event queue id (elad: TODO)
 	u64 source;
 	u64 data1;
 	u64 data2;

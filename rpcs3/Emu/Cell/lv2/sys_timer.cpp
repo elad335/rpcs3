@@ -30,7 +30,7 @@ void lv2_timer_context::operator()()
 			{
 				std::lock_guard lock(mutex);
 
-				if (const auto queue = port.lock())
+				if (const auto queue = port.ref())
 				{
 					queue->send(source, data1, data2, next);
 				}
@@ -92,7 +92,7 @@ error_code sys_timer_destroy(ppu_thread& ppu, u32 timer_id)
 	{
 		std::lock_guard lock(timer.mutex);
 
-		if (!timer.port.expired())
+		if (timer.port)
 		{
 			return CELL_EISCONN;
 		}
@@ -165,7 +165,7 @@ error_code _sys_timer_start(ppu_thread& ppu, u32 timer_id, u64 base_time, u64 pe
 			return CELL_EBUSY;
 		}
 
-		if (timer.port.expired())
+		if (!timer.port)
 		{
 			return CELL_ENOTCONN;
 		}
@@ -222,22 +222,22 @@ error_code sys_timer_connect_event_queue(ppu_thread& ppu, u32 timer_id, u32 queu
 
 	const auto timer = idm::check<lv2_obj, lv2_timer>(timer_id, [&](lv2_timer& timer) -> CellError
 	{
-		const auto found = idm::find_unlocked<lv2_obj, lv2_event_queue>(queue_id);
+		auto queue = idm::get<lv2_obj, lv2_event_queue>(queue_id);
 
-		if (!found)
+		if (!queue)
 		{
 			return CELL_ESRCH;
 		}
 
 		std::lock_guard lock(timer.mutex);
 
-		if (!timer.port.expired())
+		if (!timer.port)
 		{
 			return CELL_EISCONN;
 		}
 
 		// Connect event queue
-		timer.port   = std::static_pointer_cast<lv2_event_queue>(found->second);
+		timer.port   = queue;
 		timer.source = name ? name : ((u64)process_getpid() << 32) | timer_id;
 		timer.data1  = data1;
 		timer.data2  = data2;
@@ -267,13 +267,13 @@ error_code sys_timer_disconnect_event_queue(ppu_thread& ppu, u32 timer_id)
 	{
 		std::lock_guard lock(timer.mutex);
 
-		if (timer.port.expired())
+		if (!timer.port)
 		{
 			return CELL_ENOTCONN;
 		}
 
 		timer.state = SYS_TIMER_STATE_STOP;
-		timer.port.reset();
+		timer.port.clear();
 		return {};
 	});
 
