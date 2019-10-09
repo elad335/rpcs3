@@ -1,4 +1,5 @@
 ﻿#pragma once
+#include "Emu/Memory/vm_ptr.h"
 
 error_code sys_sm_get_ext_event2(vm::ptr<u64> a1, vm::ptr<u64> a2, vm::ptr<u64> a3, u64 a4);
 error_code sys_sm_shutdown(u16 op, vm::ptr<void> param, u64 size);

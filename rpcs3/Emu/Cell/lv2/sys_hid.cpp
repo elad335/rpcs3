@@ -1,4 +1,6 @@
 ﻿#include "stdafx.h"
+#include "sys_hid.h"
+
 #include "Emu/Memory/vm.h"
 #include "Emu/System.h"
 #include "Emu/Cell/PPUThread.h"
@@ -7,10 +9,8 @@
 #include "Emu/Io/PadHandler.h"
 #include "Emu/Cell/Modules/cellPad.h"
 
-#include "sys_hid.h"
 
-
-logs::channel sys_hid("sys_hid");
+LOG_CHANNEL(sys_hid);
 
 error_code sys_hid_manager_open(u64 device_type, u64 port_no, vm::ptr<u32> handle) {
 	sys_hid.todo("sys_hid_manager_open(device_type=0x%llx, port_no=0x%llx, handle=*0x%llx)", device_type, port_no, handle);
@@ -156,7 +156,7 @@ error_code sys_hid_manager_read(u32 handle, u32 pkg_id, vm::ptr<void> buf, u64 b
 		//auto data = vm::static_ptr_cast<u16[64]>(buf);
 		// todo: use handle and dont call cellpad here
 		vm::var<CellPadData> tmpData;
-		if ((cellPadGetData(0, tmpData) == CELL_OK) && tmpData->len > 0)
+		if ((cellPadGetData(0, +tmpData) == CELL_OK) && tmpData->len > 0)
 		{
 			u64 cpySize = std::min((u64)tmpData->len * 2, buf_size * 2);
 			memcpy(buf.get_ptr(), &tmpData->button, cpySize);
@@ -166,7 +166,7 @@ error_code sys_hid_manager_read(u32 handle, u32 pkg_id, vm::ptr<void> buf, u64 b
 	else if (pkg_id == 0x81) {
 		// cellPadGetDataExtra?
 		vm::var<CellPadData> tmpData;
-		cellPadGetData(0, tmpData);
+		cellPadGetData(0, +tmpData);
 		u64 cpySize = std::min((u64)tmpData->len * 2, buf_size);
 		memcpy(buf.get_ptr(), &tmpData->button, cpySize);
 		return not_an_error(cpySize / 2);

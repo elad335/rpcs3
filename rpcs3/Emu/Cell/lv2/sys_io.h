@@ -1,5 +1,7 @@
 ﻿#pragma once
 
+#include "Emu/Memory/vm_ptr.h"
+#include "sys_sync.h"
 
 struct lv2_io_buf
 {

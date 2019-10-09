@@ -8,7 +8,7 @@
 #include "Emu/Cell/lv2/sys_io.h"
 
 
-logs::channel sys_io("sys_io");
+LOG_CHANNEL(sys_io);
 
 error_code sys_io_buffer_create(u32 block_count, u32 block_size, u32 blocks, u32 unk1, vm::ptr<u32> handle)
 {
