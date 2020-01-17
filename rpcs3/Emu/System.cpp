@@ -1063,7 +1063,7 @@ void Emulator::Load(const std::string& title_id, bool add_only, bool force_globa
 
 		// Mount default relative path to non-existent directory
 		vfs::mount("/dev_hdd0", fmt::replace_all(g_cfg.vfs.dev_hdd0, "$(EmulatorDir)", emu_dir));
-		vfs::mount("/dev_flash", fmt::replace_all(g_cfg.vfs.dev_flash, "$(EmulatorDir)", emu_dir));
+		vfs::mount("/dev_flash", g_cfg.vfs.get_dev_flash());
 		vfs::mount("/dev_flash2", fmt::replace_all(g_cfg.vfs.dev_flash2, "$(EmulatorDir)", emu_dir));
 		vfs::mount("/dev_usb", fmt::replace_all(g_cfg.vfs.dev_usb000, "$(EmulatorDir)", emu_dir));
 		vfs::mount("/dev_usb000", fmt::replace_all(g_cfg.vfs.dev_usb000, "$(EmulatorDir)", emu_dir));
