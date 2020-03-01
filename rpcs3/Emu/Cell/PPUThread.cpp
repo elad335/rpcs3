@@ -696,6 +696,9 @@ void ppu_thread::exec_task()
 
 ppu_thread::~ppu_thread()
 {
+	// Descedule
+	lv2_obj::sleep(*this);
+
 	// Deallocate Stack Area
 	vm::dealloc_verbose_nothrow(stack_addr, vm::stack);
 }
