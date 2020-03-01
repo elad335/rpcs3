@@ -54,9 +54,9 @@ void _sys_ppu_thread_exit(ppu_thread& ppu, u64 errorcode)
 		// Register object in FXO
 		g_fxo->get<restart_count>();
 
-		Emu.CallAfter([id = ppu.id, old_count = counter]()
+		Emu.CallAfter([id = ppu.id, old = +counter]()
 		{
-			if (old_count == counter && !idm::remove<named_thread<ppu_thread>>(id))
+			if (old == counter && !idm::remove<named_thread<ppu_thread>>(id))
 			{
 				sys_ppu_thread.fatal("Failed to remove detached thread 0x%x", id);
 			}
