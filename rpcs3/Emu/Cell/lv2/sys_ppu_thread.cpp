@@ -41,24 +41,26 @@ void _sys_ppu_thread_exit(ppu_thread& ppu, u64 errorcode)
 
 	if (jid == umax)
 	{
-		// Simple structure to cleanup previous thread, because can't remove its own thread
-		struct ppu_thread_cleaner
+		static atomic_t<u64> counter = 0;
+
+		struct restart_count
 		{
-			atomic_t<u32> id = 0;
+			~restart_count()
+			{
+				counter++;
+			}
 		};
 
-		auto cleaner = g_fxo->get<ppu_thread_cleaner>();
+		// Register object in FXO
+		g_fxo->get<restart_count>();
 
-		if (cleaner->id || !cleaner->id.compare_and_swap_test(0, ppu.id)) [[likely]]
+		Emu.CallAfter([id = ppu.id, old_count = counter]()
 		{
-			if (u32 old_id = cleaner->id.exchange(ppu.id))
+			if (old_count == counter && !idm::remove<named_thread<ppu_thread>>(id))
 			{
-				if (!idm::remove<named_thread<ppu_thread>>(old_id))
-				{
-					sys_ppu_thread.fatal("Failed to remove detached thread 0x%x", old_id);
-				}
+				sys_ppu_thread.fatal("Failed to remove detached thread 0x%x", id);
 			}
-		}
+		});
 	}
 	else if (jid != 0)
 	{
@@ -67,9 +69,6 @@ void _sys_ppu_thread_exit(ppu_thread& ppu, u64 errorcode)
 		// Schedule joiner and unqueue
 		lv2_obj::awake(idm::check_unlocked<named_thread<ppu_thread>>(jid));
 	}
-
-	// Unqueue
-	lv2_obj::sleep(ppu);
 
 	// Remove suspend state (TODO)
 	ppu.state -= cpu_flag::suspend;
