@@ -43,6 +43,7 @@ struct ps3_process_info_t
 	u32 ppc_seg;
 	SelfAdditionalInfo self_info;
 	u32 ctrl_flags1 = 0;
+	bool is_vsh = false;
 
 	bool has_root_perm() const;
 	bool has_debug_perm() const;

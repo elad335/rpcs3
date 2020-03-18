@@ -1509,6 +1509,18 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 					sys_log.error("Failed to create boot.elf");
 				}
 			}
+
+			if (g_ps3_process_info.ctrl_flags1 == 0x40000000 && elf_path.ends_with("/vsh.self"))
+			{
+				g_ps3_process_info.is_vsh = true;
+
+				for (auto& ctrl : g_ps3_process_info.self_info.ctrl_info)
+				{
+					ctrl.Show();
+				}
+
+				g_ps3_process_info.self_info.app_info.Show();
+			}
 		}
 		else
 		{

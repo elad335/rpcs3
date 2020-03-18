@@ -1,5 +1,6 @@
 ﻿#include "stdafx.h"
 #include "sys_sync.h"
+#include "sys_process.h"
 #include "sys_fs.h"
 
 #include "Emu/Cell/PPUThread.h"
@@ -2074,12 +2075,64 @@ error_code sys_fs_get_mount_info(ppu_thread& ppu, vm::ptr<CellFsMountInfo> info,
 {
 	sys_fs.todo("sys_fs_get_mount_info(info=*0x%x, len=0x%x, out_len=*0x%x)", info, len, out_len);
 
+	// unsure what out_len represents, but we'll just set it to len
+	*out_len = len;
+
+	// most of the unk variables seem to always be zero
+	memset(info.get_ptr(), 0, sizeof(CellFsMountInfo) * len);
+
+	strcpy(info[0].mount_path, "/");
+	strcpy(info[0].filesystem, "CELL_FS_ADMINFS");
+	strcpy(info[0].dev_name, "CELL_FS_ADMINFS:");
+	info[0].unk5 = 0x10000000;
+
+	// these are CELL_FS_HOST when mounted 
+	strcpy(info[1].mount_path, "/app_home");
+	strcpy(info[1].filesystem, "CELL_FS_DUMMY");
+	strcpy(info[1].dev_name, "CELL_FS_DUMMY:");
+
+	strcpy(info[2].mount_path, "/host_root");
+	strcpy(info[2].filesystem, "CELL_FS_DUMMY");
+	strcpy(info[2].dev_name, "CELL_FS_DUMMY:/");
+
+	strcpy(info[3].mount_path, "/dev_flash");
+	strcpy(info[3].filesystem, "CELL_FS_FAT");
+	strcpy(info[3].dev_name, "CELL_FS_IOS:BUILTIN_FLSH1");
+	info[3].unk5 = 0x10000000;
+
+	strcpy(info[4].mount_path, "/dev_flash2");
+	strcpy(info[4].filesystem, "CELL_FS_FAT");
+	strcpy(info[4].dev_name, "CELL_FS_IOS:BUILTIN_FLSH2");
+
+	strcpy(info[5].mount_path, "/dev_flash3");
+	strcpy(info[5].filesystem, "CELL_FS_FAT");
+	strcpy(info[5].dev_name, "CELL_FS_IOS:BUILTIN_FLSH3");
+
+	strcpy(info[6].mount_path, "/dev_hdd0");
+	strcpy(info[6].filesystem, "CELL_FS_UFS");
+	strcpy(info[6].dev_name, "CELL_FS_UTILITY:HDD0");
+
+	/*
+		strcpy(info[6].mount_path, "/dev_bdvd");
+	strcpy(info[6].filesystem, "CELL_FS_ISO9660");
+	strcpy(info[6].dev_name, "CELL_FS_IOS:PATA0_BDVD_DRIVE");*/
+
 	return CELL_OK;
 }
 
 error_code sys_fs_mount(ppu_thread& ppu, vm::cptr<char> dev_name, vm::cptr<char> file_system, vm::cptr<char> path, s32 unk1, s32 prot, s32 unk3, vm::cptr<char> str1, u32 str_len)
 {
 	sys_fs.todo("sys_fs_mount(dev_name=%s, file_system=%s, path=%s, unk1=0x%x, prot=0x%x, unk3=0x%x, str1=%s, str_len=%d)", dev_name, file_system, path, unk1, prot, unk3, str1, str_len);
+
+	if (!g_ps3_process_info.has_root_perm())
+	{
+		return CELL_ENOSYS;
+	}
+
+	if (!dev_name || !file_system || !path)
+	{
+		return CELL_EFAULT;
+	}
 
 	return CELL_OK;
 }
