@@ -208,16 +208,16 @@ void kernel_explorer::Update()
 			std::string owner_str = "Unknown";
 			sys_lwmutex_t lwm_data{};
 
-			if (lwm.try_read(&lwm_data))
+			if (lwm.control.try_read(&lwm_data))
 			{
-				switch (const u32 owner = lwm.vars.owner)
+				switch (const u32 owner = lwm_data.vars.owner)
 				{
 				case lwmutex_free: owner_str = "FREE"; break;
 				//case lwmutex_dead: owner_str = "DEAD"; break;
 				//case lwmutex_reserved: owner_str = "RESERVED"; break;
 				default:
 				{
-					if (owner >= ppu_thread::id_base && owner < ppu_thread::id_base + ppu_thread::id_step)
+					if (owner >= ppu_thread::id_base && owner <= ppu_thread::id_base + ppu_thread::id_step - 1)
 					{
 						owner_str = fmt::format("0x%x", owner);
 					}
@@ -228,7 +228,7 @@ void kernel_explorer::Update()
 			}
 	
 			l_addTreeChild(node, qstr(fmt::format(u8"LWMutex: ID = 0x%08x “%s”,%s Owner = %s, Locks = %u, Wq = %zu", id, lv2_obj::name64(lwm.name),
-					(lwm_data.attribute & SYS_SYNC_RECURSIVE) " Recursive," : "", owner_str, lwm_data.recursive_count, lwm.sq.size())));
+					(lwm_data.attribute & SYS_SYNC_RECURSIVE) ? " Recursive," : "", owner_str, lwm_data.recursive_count, lwm.sq.size())));
 			break;
 		}
 		case SYS_TIMER_OBJECT:
