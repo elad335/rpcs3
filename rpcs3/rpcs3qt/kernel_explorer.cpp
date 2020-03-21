@@ -208,13 +208,13 @@ void kernel_explorer::Update()
 			std::string owner_str = "Unknown";
 			sys_lwmutex_t lwm_data{};
 
-			if (lwm.control.try_read(&lwm_data))
+			if (lwm.control.try_read(lwm_data))
 			{
 				switch (const u32 owner = lwm_data.vars.owner)
 				{
-				case lwmutex_free: owner_str = "FREE"; break;
-				//case lwmutex_dead: owner_str = "DEAD"; break;
-				//case lwmutex_reserved: owner_str = "RESERVED"; break;
+				case lwmutex_free: owner_str = "free"; break;
+				//case lwmutex_dead: owner_str = "dead"; break;
+				//case lwmutex_reserved: owner_str = "reserved"; break;
 				default:
 				{
 					if (owner >= ppu_thread::id_base && owner <= ppu_thread::id_base + ppu_thread::id_step - 1)
