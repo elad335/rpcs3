@@ -2284,6 +2284,38 @@ error_code sys_net_abort(ppu_thread& ppu, s32 type, u64 arg, s32 flags)
 	vm::temporary_unlock(ppu);
 
 	sys_net.todo("sys_net_abort(type=%d, arg=0x%x, flags=0x%x)", type, arg, flags);
+
+	switch (type)
+	{
+	case 0:
+	{
+		const auto sock = idm::check<lv2_socket>(arg, [&](lv2_socket& sock) -> sys_net_error
+		{
+			std::lock_guard lock
+			sock.queue;
+		});
+
+		if (!sock)
+		{
+			return -SYS_NET_EBADF;
+		}
+
+		if (sock.ret)
+		{
+			return -sock.ret;
+		}
+
+		break;
+	}
+	// TODO
+	case 1:
+	case 2:
+	case 3:
+	case 4:
+	default:
+		break;
+	}
+
 	return CELL_OK;
 }
 
