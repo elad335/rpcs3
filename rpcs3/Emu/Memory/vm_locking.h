@@ -1,6 +1,7 @@
 #pragma once
 
 #include "vm.h"
+#include "Utilities/address_range.h"
 
 class cpu_thread;
 class shared_mutex;
@@ -42,7 +43,7 @@ namespace vm
 	{
 		writer_lock(const writer_lock&) = delete;
 		writer_lock& operator=(const writer_lock&) = delete;
-		writer_lock(u32 addr = 0);
+		writer_lock(u32 tag = UINT32_MAX);
 		~writer_lock();
 	};
 } // namespace vm

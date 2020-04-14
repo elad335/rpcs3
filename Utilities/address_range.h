@@ -37,7 +37,7 @@ namespace utils
 	/**
 	 * Address Range utility class
 	 */
-	class address_range
+	class alignas(8) address_range
 	{
 	public:
 		u32 start = UINT32_MAX; // First address in range
@@ -232,6 +232,11 @@ namespace utils
 			return (start <= end);
 		}
 
+		operator bool() const
+		{
+			return valid();
+		}
+
 		void invalidate()
 		{
 			start = UINT32_MAX;
@@ -241,12 +246,12 @@ namespace utils
 		// Comparison Operators
 		bool operator ==(const address_range &other) const
 		{
-			return (start == other.start && end == other.end);
+			return std::memcmp(this, &other, sizeof(*this)) == 0;
 		}
 
 		bool operator !=(const address_range &other) const
 		{
-			return (start != other.start || end != other.end);
+			return std::memcmp(this, &other, sizeof(*this)) != 0;
 		}
 
 		/**

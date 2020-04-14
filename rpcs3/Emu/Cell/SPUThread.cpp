@@ -1353,7 +1353,7 @@ void spu_thread::do_dma_transfer(const spu_mfc_cmd& args)
 				size -= 16;
 			}
 
-			lock->release(0);
+			lock->release({0, 0});
 			break;
 		}
 		}
@@ -1566,7 +1566,7 @@ void spu_thread::do_putlluc(const spu_mfc_cmd& args)
 {
 	const u32 addr = args.eal & -128;
 
-	if (raddr && addr == raddr)
+	if (raddr && rtag == vm::get_memory_tag(addr))
 	{
 		// Last check for event before we clear the reservation
 		if ((vm::reservation_acquire(addr, 128) & -128) != rtime || !cmp_rdata(rdata, vm::_ref<decltype(rdata)>(addr)))
@@ -1857,7 +1857,7 @@ bool spu_thread::process_mfc_cmd()
 			break;
 		}
 
-		if (raddr && raddr != addr)
+		if (raddr && rtag != tag)
 		{
 			// Last check for event before we replace the reservation with a new one
 			if ((vm::reservation_acquire(raddr, 128) & -128) != rtime || !cmp_rdata(rdata, vm::_ref<decltype(rdata)>(raddr)))
@@ -1865,7 +1865,7 @@ bool spu_thread::process_mfc_cmd()
 				ch_event_stat |= SPU_EVENT_LR;
 			}
 		}
-		else if (raddr == addr)
+		else if (rtag == tag)
 		{
 			// Lost previous reservation on polling
 			if (ntime != rtime || !cmp_rdata(rdata, dst))
@@ -1875,6 +1875,7 @@ bool spu_thread::process_mfc_cmd()
 		}
 
 		raddr = addr;
+		rtag = tag;
 		rtime = ntime;
 		mov_rdata(rdata, dst);
 
@@ -1886,9 +1887,10 @@ bool spu_thread::process_mfc_cmd()
 	{
 		// Store conditionally
 		const u32 addr = ch_mfc_cmd.eal & -128;
+		const u32 tag = vm::get_memory_tag(addr);
 		u32 result = 0;
 
-		if (raddr == addr)
+		if (rtag == tag)
 		{
 			const auto& to_write = _ref<decltype(rdata)>(ch_mfc_cmd.lsa & 0x3ff80);
 
@@ -1982,7 +1984,7 @@ bool spu_thread::process_mfc_cmd()
 			if (raddr)
 			{
 				// Last check for event before we clear the reservation
-				if (raddr == addr || rtime != (vm::reservation_acquire(raddr, 128) & -128) || !cmp_rdata(rdata, vm::_ref<decltype(rdata)>(raddr)))
+				if (rtag == tag || rtime != (vm::reservation_acquire(raddr, 128) & -128) || !cmp_rdata(rdata, vm::_ref<decltype(rdata)>(raddr)))
 				{
 					ch_event_stat |= SPU_EVENT_LR;
 				}

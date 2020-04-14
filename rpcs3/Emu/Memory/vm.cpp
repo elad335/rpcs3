@@ -53,6 +53,9 @@ namespace vm
 	// Shareable memory bits
 	alignas(4096) atomic_t<u8> g_shareable[65536]{0};
 
+	// Tags allocations table
+	alignas(4096) u64 g_tags_pages[65536 / 64]{0};
+
 	// Memory locations
 	std::vector<std::shared_ptr<block_t>> g_locations;
 
@@ -67,7 +70,7 @@ namespace vm
 
 	// Memory mutex: passive locks
 	std::array<atomic_t<cpu_thread*>, g_cfg.core.ppu_threads.max> g_locks{};
-	std::array<atomic_t<u64>, 6> g_range_locks{};
+	std::array<atomic_t<u64>, 6> g_range_locks;
 
 	static void _register_lock(cpu_thread* _cpu)
 	{
@@ -85,6 +88,9 @@ namespace vm
 
 	static atomic_t<u64>* _register_range_lock(const u64 lock_info)
 	{
+		// Verify end address is bigger than start addresses
+		AUDIT(lock_info.valid());
+	
 		while (true)
 		{
 			for (auto& lock : g_range_locks)
@@ -206,7 +212,7 @@ namespace vm
 				return _ret;
 			}
 
-			*_ret = 0;
+			_ret->store({0, 0});
 		}
 
 		{
@@ -323,7 +329,8 @@ namespace vm
 				}
 			}
 
-			g_addr_lock = addr;
+			// Store tag (must be using seq cst instruction)
+			g_tag_lock.store(tag);
 
 			if (g_shareable[addr >> 16])
 			{
@@ -335,16 +342,8 @@ namespace vm
 			{
 				while (true)
 				{
-					const u64 value = lock;
-
-					// Test beginning address
-					if (static_cast<u32>(value) > addr)
-					{
-						break;
-					}
-
-					// Test end address
-					if (static_cast<u32>(value >> 32) <= addr)
+					// Test tags range
+					if (!test_addr_if_locked(tag, lock.load())) [[likely]]
 					{
 						break;
 					}
@@ -371,7 +370,7 @@ namespace vm
 
 	writer_lock::~writer_lock()
 	{
-		g_addr_lock.release(0);
+		g_tag_lock.release(UINT32_MAX);
 		g_mutex.unlock();
 	}
 
@@ -405,7 +404,10 @@ namespace vm
 	// Memory pages
 	std::array<memory_page, 0x100000000 / 4096> g_pages{};
 
-	static void _page_map(u32 addr, u8 flags, u32 size, utils::shm* shm)
+	// Memory tags map
+	std::array<atomic_t<u32>, 0x100000000 / 0x10000> g_tags_map{};
+
+	static void _page_map(u32 addr, u8 flags, u32 size, vm::shm* shm, u32 tag)
 	{
 		if (!size || (size | addr) % 4096 || flags & page_allocated)
 		{
@@ -469,11 +471,19 @@ namespace vm
 				fmt::throw_exception("Concurrent access (addr=0x%x, size=0x%x, flags=0x%x, current_addr=0x%x)" HERE, addr, size, flags, i * 4096);
 			}
 		}
+
+		if (shm)
+		{
+			for (u32 i = 0; i < (size >> 16); i++)
+			{
+				g_tags_map[(addr >> 16) + i].release((tag + i) << 16);
+			}
+		}
 	}
 
 	bool page_protect(u32 addr, u32 size, u8 flags_test, u8 flags_set, u8 flags_clear)
 	{
-		vm::writer_lock lock(0);
+		vm::writer_lock lock;
 
 		if (!size || (size | addr) % 4096)
 		{
@@ -531,7 +541,7 @@ namespace vm
 		return true;
 	}
 
-	static u32 _page_unmap(u32 addr, u32 max_size, utils::shm* shm)
+	static u32 _page_unmap(u32 addr, u32 max_size, vm::shm* shm)
 	{
 		if (!max_size || (max_size | addr) % 4096)
 		{
@@ -560,6 +570,14 @@ namespace vm
 			}
 
 			size += 4096;
+		}
+
+		if (shm)
+		{
+			for (u32 i = addr >> 16; i < (addr >> 16) + (size >> 16); i++)
+			{
+				g_tags_map[i].release(0);
+			}
 		}
 
 		for (u32 i = addr / 4096; i < addr / 4096 + size / 4096; i++)
@@ -615,7 +633,7 @@ namespace vm
 		return size;
 	}
 
-	bool check_addr(u32 addr, u32 size, u8 flags)
+	bool check_addr(u32 addr, u32 size, u8 flags) noexcept
 	{
 		// Overflow checking
 		if (addr + size < addr && (addr + size) != 0)
@@ -635,6 +653,88 @@ namespace vm
 		}
 
 		return true;
+	}
+
+	u32 get_memory_tag(u32 addr) noexcept
+	{
+		return g_tags_map[addr / 0x10000] | (addr & 0xff80);
+	}
+
+	shm::shm(u32 size)
+		: utils::shm(size)
+		, tag([&]
+	{
+		constexpr u32 block_size = 0x10000; // Area of vm memory each tag block covers 
+		constexpr u32 reserv_per_tag = block_size / 128; // Reservations per tag block
+		constexpr u32 alloc_size = 0x1000; // Number of tag blocks require an exclusive allocation
+
+		size /= block_size; // Get amount of tag blocks
+		std::scoped_lock lock(s_mutex);
+		constexpr auto& res = g_tags_pages;
+
+		for (u32 i = 0;;)
+		{
+			// Unreachable, requires all 4GB of vm memory to be allocated
+			verify(HERE), i <= (0x100000000 / block_size) - size;
+
+			bool found = true;
+
+			// Search free tag blocks
+			for (u32 j = i; j < size; j = ::align(j + 1, 64))
+			{
+				const u64 mask = res[j / 64];
+
+				if (mask == umax)
+				{
+					// Quickly skip this
+					found = false;
+					i = ::align(j + 1, 64);
+					break;
+				}
+
+				const u64 numbits = (j - size) % 64;
+				const u64 testbits = (~0ull >> numbits) << (j % 64);
+
+				if (const u64 busy = mask & testbits)
+				{
+					found = false;
+					i = (j & -64) + (std::countl_zero(busy) ^ 63) + 1;
+					break;
+				}
+			}
+
+			if (found)
+			{
+				for (u32 j = i; j < size; j = ::align(j + 1, 64))
+				{
+					const u64 numbits = (j - size) % 64;
+					const u64 maskbits = (~0ull >> numbits) << (j % 64);
+
+					res[j / 64] |= maskbits;
+				}
+
+				return i;
+			}
+		}
+	}())
+	{
+	}
+
+	shm::~shm()
+	{
+		std::scoped_lock lock(s_mutex);
+
+		constexpr u32 block_size = 0x10000;
+		const auto res = &g_tags_pages[tag / 64];
+		const u32 tags_count = this->size() / block_size;
+
+		for (u32 i = tag; i < tags_count; i = ::align(i + 1, 64))
+		{
+			const u64 numbits = (i - tags_count) % 64;
+			const u64 maskbits = (~0ull >> numbits) << (i % 64);
+
+			res[i / 64] &= ~maskbits;
+		}
 	}
 
 	u32 alloc(u32 size, memory_location_t location, u32 align)
@@ -690,7 +790,7 @@ namespace vm
 		}
 	}
 
-	bool block_t::try_alloc(u32 addr, u8 flags, u32 size, std::shared_ptr<utils::shm>&& shm)
+	bool block_t::try_alloc(u32 addr, u8 flags, u32 size, std::shared_ptr<vm::shm>&& shm)
 	{
 		// Check if memory area is already mapped
 		for (u32 i = addr / 4096; i <= (addr + size - 1) / 4096; i++)
@@ -712,7 +812,7 @@ namespace vm
 		}
 
 		// Map "real" memory pages
-		_page_map(page_addr, flags, page_size, shm.get());
+		_page_map(page_addr, flags, page_size, shm.get(), shm ? shm->tag : 0);
 
 		// Add entry
 		m_map[addr] = std::make_pair(size, std::move(shm));
@@ -731,13 +831,15 @@ namespace vm
 			m_common = std::make_shared<utils::shm>(size);
 			verify(HERE), m_common->map_critical(vm::base(addr), utils::protection::no) == vm::base(addr);
 			verify(HERE), m_common->map_critical(vm::get_super_ptr(addr)) == vm::get_super_ptr(addr);
-		}
-	}
 
-	block_t::~block_t()
-	{
+			for (u32 i = 0; i < size; i += 0x10000)
+			{
+				g_tags_map[(addr + i) >> 16].release(i + (m_common->tag << 16));
+			}
+		}
+
 		{
-			vm::writer_lock lock(0);
+			vm::writer_lock lock;
 
 			// Deallocate all memory
 			for (auto it = m_map.begin(), end = m_map.end(); !m_common && it != end;)
@@ -757,7 +859,7 @@ namespace vm
 		}
 	}
 
-	u32 block_t::alloc(const u32 orig_size, u32 align, const std::shared_ptr<utils::shm>* src, u64 flags)
+	u32 block_t::alloc(const u32 orig_size, u32 align, const std::shared_ptr<vm::shm>* src, u64 flags)
 	{
 		if (!src)
 		{
@@ -765,7 +867,7 @@ namespace vm
 			flags = this->flags;
 		}
 
-		vm::writer_lock lock(0);
+		vm::writer_lock lock;
 
 		// Determine minimal alignment
 		const u32 min_page_size = flags & 0x100 ? 0x1000 : 0x10000;
@@ -797,14 +899,14 @@ namespace vm
 		}
 
 		// Create or import shared memory object
-		std::shared_ptr<utils::shm> shm;
+		std::shared_ptr<vm::shm> shm;
 
 		if (m_common)
 			verify(HERE), !src;
 		else if (src)
 			shm = *src;
 		else
-			shm = std::make_shared<utils::shm>(size);
+			shm = std::make_shared<vm::shm>(size);
 
 		// Search for an appropriate place (unoptimized)
 		for (u32 addr = ::align(this->addr, align); u64{addr} + size <= u64{this->addr} + this->size; addr += align)
@@ -818,7 +920,7 @@ namespace vm
 		return 0;
 	}
 
-	u32 block_t::falloc(u32 addr, const u32 orig_size, const std::shared_ptr<utils::shm>* src, u64 flags)
+	u32 block_t::falloc(u32 addr, const u32 orig_size, const std::shared_ptr<vm::shm>* src, u64 flags)
 	{
 		if (!src)
 		{
@@ -826,7 +928,7 @@ namespace vm
 			flags = this->flags;
 		}
 
-		vm::writer_lock lock(0);
+		vm::writer_lock lock;
 
 		// Determine minimal alignment
 		const u32 min_page_size = flags & 0x100 ? 0x1000 : 0x10000;
@@ -852,14 +954,14 @@ namespace vm
 		}
 
 		// Create or import shared memory object
-		std::shared_ptr<utils::shm> shm;
+		std::shared_ptr<vm::shm> shm;
 
 		if (m_common)
 			verify(HERE), !src;
 		else if (src)
 			shm = *src;
 		else
-			shm = std::make_shared<utils::shm>(size);
+			shm = std::make_shared<vm::shm>(size);
 
 		if (!try_alloc(addr, pflags, size, std::move(shm)))
 		{
@@ -869,10 +971,10 @@ namespace vm
 		return addr;
 	}
 
-	u32 block_t::dealloc(u32 addr, const std::shared_ptr<utils::shm>* src)
+	u32 block_t::dealloc(u32 addr, const std::shared_ptr<vm::shm>* src)
 	{
 		{
-			vm::writer_lock lock(0);
+			vm::writer_lock lock;
 
 			const auto found = m_map.find(addr - (flags & 0x10 ? 0x1000 : 0));
 
@@ -906,7 +1008,7 @@ namespace vm
 		}
 	}
 
-	std::pair<u32, std::shared_ptr<utils::shm>> block_t::get(u32 addr, u32 size)
+	std::pair<u32, std::shared_ptr<vm::shm>> block_t::get(u32 addr, u32 size)
 	{
 		if (addr < this->addr || addr + u64{size} > this->addr + u64{this->size})
 		{
@@ -959,7 +1061,7 @@ namespace vm
 
 	u32 block_t::used()
 	{
-		vm::writer_lock lock(0);
+		vm::writer_lock lock;
 
 		return imp_used(lock);
 	}
@@ -1056,14 +1158,14 @@ namespace vm
 
 	std::shared_ptr<block_t> map(u32 addr, u32 size, u64 flags)
 	{
-		vm::writer_lock lock(0);
+		vm::writer_lock lock;
 
 		return _map(addr, size, flags);
 	}
 
 	std::shared_ptr<block_t> find_map(u32 orig_size, u32 align, u64 flags)
 	{
-		vm::writer_lock lock(0);
+		vm::writer_lock lock;
 
 		// Align to minimal page size
 		const u32 size = ::align(orig_size, 0x10000);
@@ -1089,7 +1191,7 @@ namespace vm
 
 	std::shared_ptr<block_t> unmap(u32 addr, bool must_be_empty)
 	{
-		vm::writer_lock lock(0);
+		vm::writer_lock lock;
 
 		for (auto it = g_locations.begin() + memory_location_max; it != g_locations.end(); it++)
 		{
@@ -1235,17 +1337,21 @@ namespace vm
 
 			std::memset(g_reservations, 0, sizeof(g_reservations));
 			std::memset(g_shareable, 0, sizeof(g_shareable));
+			std::memset(g_tags_pages, 0, sizeof(g_tags_pages));
 		}
 	}
 
 	void close()
 	{
+		std::memset(g_tags_map.data(), 0, g_tags_map.size() * sizeof(g_tags_map[0]));
 		g_locations.clear();
 
 		utils::memory_decommit(g_base_addr, 0x100000000);
 		utils::memory_decommit(g_exec_addr, 0x100000000);
 		utils::memory_decommit(g_stat_addr, 0x100000000);
 	}
+
+	DECLARE(vm::shm::s_mutex);
 }
 
 void fmt_class_string<vm::_ptr_base<const void, u32>>::format(std::string& out, u64 arg)
