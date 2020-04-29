@@ -1933,9 +1933,11 @@ bool spu_interpreter_precise::FREST(spu_thread& spu, spu_opcode_t op)
 bool spu_interpreter_precise::FRSQEST(spu_thread& spu, spu_opcode_t op)
 {
 	fesetround(FE_TOWARDZERO);
+	const auto ra = spu.gpr[op.ra];
+	auto res = v128::fromF(_mm_rsqrt_ps(ra.vf));
 	for (int i = 0; i < 4; i++)
 	{
-		const float a = spu.gpr[op.ra]._f[i];
+		const float a = ra._f[i];
 		float result;
 		if (fexpf(a) == 0)
 		{
@@ -1943,9 +1945,8 @@ bool spu_interpreter_precise::FRSQEST(spu_thread& spu, spu_opcode_t op)
 			result = extended(0, 0x7FFFFF);
 		}
 		else if (isextended(a))
-			result = 0.5f / std::sqrt(std::fabs(ldexpf_extended(a, -2)));
-		else
-			result = 1 / std::sqrt(std::fabs(a));
+			res._f[i] = 0.5f / std::sqrt(std::fabs(ldexpf_extended(a, -2)));
+
 		spu.gpr[op.rt]._f[i] = result;
 	}
 	return true;

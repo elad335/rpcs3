@@ -1175,7 +1175,18 @@ bool lv2_obj::awake_unlocked(cpu_thread* cpu, s32 prio)
 	default:
 	{
 		// Priority set
-		if (static_cast<ppu_thread*>(cpu)->prio.exchange(prio) == prio || !unqueue(g_ppu, cpu))
+		auto& _prio = static_cast<ppu_thread*>(cpu)->prio;
+		auto _prio1 = static_cast<ppu_thread*>(cpu)->prio1.exchange(prio);
+
+		if (_prio != _prio1)
+		{
+			if (_prio <= prio)
+			{
+				return true;
+			}
+		}
+
+		if (_prio.exchange(prio) == prio || !unqueue(g_ppu, cpu))
 		{
 			return true;
 		}

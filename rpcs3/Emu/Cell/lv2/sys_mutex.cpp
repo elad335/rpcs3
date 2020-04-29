@@ -251,6 +251,12 @@ error_code sys_mutex_unlock(ppu_thread& ppu, u32 mutex_id)
 	{
 		std::lock_guard lock(mutex->mutex);
 
+		if (ppu.prio != ppu.prio1)
+		{
+			// Restore old priority
+			lv2_obj::set_priority(ppu, ppu.prio1);
+		}
+
 		if (auto cpu = mutex->reown<ppu_thread>())
 		{
 			mutex->awake(cpu);

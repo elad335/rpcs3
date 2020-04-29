@@ -7518,9 +7518,16 @@ public:
 	{
 		// TODO
 		if (g_cfg.core.spu_accurate_xfloat)
-			set_vr(op.rt, fsplat<f64[4]>(1.0) / sqrt(fabs(get_vr<f64[4]>(op.ra))));
+		{
+			const auto a = get_vr<f32[4]>(op.ra);
+			const auto mask_ov = sext<s32[4]>(bitcast<s32[4]>(fabs(a)) > splat<s32[4]>(0x7fc00000));
+			const auto mask_de = eval(noncast<u32[4]>(sext<s32[4]>(fcmp_ord(a == fsplat<f32[4]>(0.)))) >> 1);
+			set_vr(op.rt, (bitcast<s32[4]>(fre(a)) & ~mask_ov) | noncast<s32[4]>(mask_de));
+		}
 		else
-			set_vr(op.rt, fsplat<f32[4]>(1.0) / sqrt(fabs(get_vr<f32[4]>(op.ra))));
+		{
+			set_vr(op.rt, frsqe(fabs(get_vr<f32[4]>(op.ra))));
+		}
 	}
 
 	void FCGT(spu_opcode_t op)

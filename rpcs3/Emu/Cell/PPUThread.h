@@ -195,7 +195,8 @@ public:
 	u64 rtime{0};
 	u64 rdata{0}; // Reservation data
 
-	atomic_t<s32> prio{0}; // Thread priority (0..3071)
+	atomic_t<s32> prio{0}; // Thread priority (0..3071, used by the scheduler)
+	atomic_t<s32> prio1{0}; // Internal thread priority (used to restore priority for SYS_SYNC_PRIORITY_INHERIT
 	const u32 stack_size; // Stack size
 	const u32 stack_addr; // Stack address
 
