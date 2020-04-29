@@ -1988,10 +1988,8 @@ bool ppu_interpreter::VRLW(ppu_thread& ppu, ppu_opcode_t op)
 
 bool ppu_interpreter::VRSQRTEFP(ppu_thread& ppu, ppu_opcode_t op)
 {
-	const auto a = _mm_set_ps(1.0f, 1.0f, 1.0f, 1.0f);
-	const auto b = vec_handle_denormal(ppu, ppu.vr[op.vb]).vf;
-	const auto result = _mm_div_ps(a, _mm_sqrt_ps(b));
-	ppu.vr[op.vd] = vec_handle_denormal(ppu, vec_handle_nan(result, a, b));
+	const auto b = ppu.vr[op.vb];
+	ppu.vr[op.vd] = vec_handle_nan(v128::fromF(_mm_rcp_ps(b.vf)), b);
 	return true;
 }
 
