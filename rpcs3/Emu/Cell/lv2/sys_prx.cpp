@@ -405,9 +405,8 @@ error_code _sys_prx_stop_module(u32 id, u64 flags, vm::ptr<sys_prx_start_stop_mo
 		}
 	}
 
-	// These commands are not used by liblv2.sprx
-	case 4: // Get start entry and stop functions
-	case 8: // Disable stop function execution
+	case 4: // Get epilouge and exit functions
+	case 8: // Disable exit function reading(?)
 	{
 		switch (const auto old = +prx->state)
 		{
@@ -422,14 +421,13 @@ error_code _sys_prx_stop_module(u32 id, u64 flags, vm::ptr<sys_prx_start_stop_mo
 
 		if (pOpt->cmd == 4u)
 		{
-			pOpt->entry.set(prx->stop ? prx->stop.addr() : ~0ull);
+			const auto _exit = prx->exit.load().addr();
+			pOpt->entry.set(_exit ? _exit : ~0ull);
 			pOpt->entry2.set(prx->epilogue ? prx->epilogue.addr() : ~0ull);
 		}
 		else
 		{
-			// Disables stop function execution (but the real value can be read through _sys_prx_get_module_info)
-			sys_prx.todo("_sys_prx_stop_module(): cmd is 8 (stop function = *0x%x)", prx->stop);
-			//prx->stop = vm::null;
+			sys_prx.todo("_sys_prx_stop_module(): cmd is 8 (exit function = *0x%x)", prx->exit.exchange(vm::null));
 		}
 		
 		return CELL_OK;

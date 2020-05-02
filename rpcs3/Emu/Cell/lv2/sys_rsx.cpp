@@ -424,6 +424,12 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 		break;
 	}
 
+	// TODO
+	case 0x002: // FIFO
+	case 0x003: // FIFO
+		sys_rsx.todo("sys_rsx_context_attribute(context_id=0x%x, package_id=0x%x, a3=0x%llx, a4=0x%llx, a5=0x%llx, a6=0x%llx)", context_id, package_id, a3, a4, a5, a6);
+		break;
+
 	case 0x100: // Display mode set
 		break;
 	case 0x101: // Display sync set, cellGcmSetFlipMode

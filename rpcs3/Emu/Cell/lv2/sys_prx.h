@@ -146,7 +146,7 @@ struct lv2_prx final : lv2_obj, ppu_module
 	vm::ptr<s32(u32 argc, vm::ptr<void> argv)> stop = vm::null;
 	vm::ptr<s32(u64 callback, u64 argc, vm::ptr<void, u64> argv)> prologue = vm::null;
 	vm::ptr<s32(u64 callback, u64 argc, vm::ptr<void, u64> argv)> epilogue = vm::null;
-	vm::ptr<s32()> exit = vm::null;
+	atomic_t<vm::ptr<s32()>> exit = vm::null;
 
 	char module_info_name[28];
 	u8 module_info_version[2];
