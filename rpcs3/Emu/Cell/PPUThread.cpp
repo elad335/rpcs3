@@ -541,7 +541,7 @@ std::string ppu_thread::dump_misc() const
 
 		for (u32 i = 3; i <= 6; i++)
 			if (gpr[i] != syscall_args[i - 3])
-				fmt::append(ret, " ** r%d = 0x%llx\n", i, syscall_args[i - 3]);
+				fmt::append(ret, " ** r%d: 0x%llx\n", i, syscall_args[i - 3]);
 	}
 	else if (is_paused())
 	{
