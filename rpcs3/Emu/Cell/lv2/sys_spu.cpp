@@ -978,10 +978,11 @@ error_code sys_spu_thread_group_terminate(ppu_thread& ppu, u32 id, s32 value)
 	{
 		// Wait for termination, only then return error code
 		const u64 last_stop = group->stop_count;
+		lock.unlock();
 
 		while (group->stop_count == last_stop)
 		{
-			group->cond.wait(lock);
+			group->stop_count.wait(last_stop);
 		}
 
 		return CELL_ESTAT;
@@ -1010,10 +1011,11 @@ error_code sys_spu_thread_group_terminate(ppu_thread& ppu, u32 id, s32 value)
 
 	// Wait until the threads are actually stopped
 	const u64 last_stop = group->stop_count;
+	lock.unlock();
 
 	while (group->stop_count == last_stop)
 	{
-		group->cond.wait(lock);
+		group->stop_count.wait(last_stop);
 	}
 
 	return CELL_OK;
@@ -1070,23 +1072,19 @@ error_code sys_spu_thread_group_join(ppu_thread& ppu, u32 id, vm::ptr<u32> cause
 		}
 
 		lv2_obj::sleep(ppu);
+		lock.unlock();
 
-		while (!ppu.gpr[4])
+		while (!ppu.state.test_sand_reset(cpu_flag::signal))
 		{
 			if (ppu.is_stopped())
 			{
 				return 0;
 			}
 
-			group->cond.wait(lock);
+			thread_ctrl::wait();
 		}
 	}
 	while (0);
-
-	if (ppu.test_stopped())
-	{
-		return 0;
-	}
 
 	if (!cause)
 	{
