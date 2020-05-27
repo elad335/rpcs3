@@ -1219,7 +1219,6 @@ bool lv2_obj::awake_unlocked(cpu_thread* cpu, s32 prio)
 					return false;
 				}
 
-				ppu->start_time = get_guest_system_time();
 				cpu = nullptr; // Disable current thread enqueing, also enable threads list enqueing
 				break;
 			}
@@ -1237,7 +1236,6 @@ bool lv2_obj::awake_unlocked(cpu_thread* cpu, s32 prio)
 		{
 			if (it != end && *it == cpu)
 			{
-				ppu_log.trace("sleep() - suspended (p=%zu)", g_pending.size());
 				return false;
 			}
 
@@ -1290,7 +1288,6 @@ bool lv2_obj::awake_unlocked(cpu_thread* cpu, s32 prio)
 
 		if (!target->state.test_and_set(cpu_flag::suspend))
 		{
-			ppu_log.trace("suspend(): %s", target->id);
 			g_pending.emplace_back(target);
 		}
 	}
@@ -1310,12 +1307,14 @@ void lv2_obj::schedule_all()
 {
 	if (g_pending.empty())
 	{
+		const u64 start_time = get_guest_system_time();
+
 		// Wake up threads
-		for (std::size_t i = 0, x = std::min<std::size_t>(g_cfg.core.ppu_threads, g_ppu.size()); i < x; i++)
+		for (std::size_t i = 0, x = std::min<std::size_t>(g_cfg.core.ppu_threads, g_ppu.size()); i < g_ppu.size(); i++)
 		{
 			const auto target = g_ppu[i];
 
-			if (target->state & cpu_flag::suspend)
+			if (i < x && target->state & cpu_flag::suspend)
 			{
 				ppu_log.trace("schedule(): %s", target->id);
 				target->state ^= (cpu_flag::signal + cpu_flag::suspend);
@@ -1325,6 +1324,16 @@ void lv2_obj::schedule_all()
 				{
 					target->notify();
 				}
+			}
+			else if (i >= x)
+			{
+				if (!target->start_time)
+				{
+					ppu_log.trace("suspend(): %s", target->id);
+					target->start_time = start_time;
+				}
+
+				target->raddr = 0; // Clear reservation
 			}
 		}
 	}
