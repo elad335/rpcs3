@@ -18,6 +18,9 @@
 #include <mutex>
 #include <thread>
 
+// Clamped float type
+enum spu_cfloat : u32 {};
+
 extern atomic_t<const char*> g_progr;
 extern atomic_t<u32> g_progr_ptotal;
 extern atomic_t<u32> g_progr_pdone;
@@ -1245,6 +1248,7 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point)
 		is_const,
 		is_mask,
 		is_rel,
+		is_clamped_float,
 
 		__bitset_enum_max
 	};
@@ -1322,6 +1326,8 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point)
 
 		m_targets.erase(pos);
 
+		bool float_dst_reg = false;
+
 		// Fill register access info
 		if (auto iflags = s_spu_iflag.decode(data))
 		{
@@ -1331,7 +1337,19 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point)
 				m_use_rb[pos / 4] = op.rb;
 			if (+iflags & +spu_iflag::use_rc)
 				m_use_rc[pos / 4] = op.rc;
+			if (+iflags & +spu_iflag::float_dst)
+				float_dst_reg = true;
 		}
+
+		auto set_regmod = [&, this](u32 reg)
+		{
+			m_regmod[pos / 4] = reg;
+
+			if (float_dst_reg)
+			{
+				m_reg_float[]
+			}
+		};
 
 		// Analyse instruction
 		switch (const auto type = s_spu_itype.decode(data))
@@ -4045,7 +4063,7 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 	}
 
 	template <typename T, uint I>
-	void set_vr(const bf_t<u32, I, 7>& index, T expr, bool fixup = true)
+	void set_vr(const bf_t<u32, I, 7>& index, T expr, bool fixup = true, vf flags)
 	{
 		// Process expression
 		const auto value = expr.eval(m_ir);
@@ -7397,9 +7415,7 @@ public:
 
 		if (g_cfg.core.spu_approx_xfloat)
 		{
-			const auto ca = eval(clamp_positive_smax(a));
-			const auto cb = eval(clamp_negative_smax(b));
-			set_vr(op.rt, sext<s32[4]>(fcmp_ord(ca > cb)));
+			set_vr(op.rt, sext<s32[4]>(fcmp_ord(get_vr<spu_cfloat[4]>(op.ra) > get_vr<spu_cfloat[4]>(op.rb)), false, vf::is_clamped_float));
 		}
 		else
 		{

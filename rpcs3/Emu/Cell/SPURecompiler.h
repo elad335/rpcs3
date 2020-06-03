@@ -201,6 +201,8 @@ protected:
 	std::array<u8, 0x10000> m_use_rb;
 	std::array<u8, 0x10000> m_use_rc;
 
+	std::array<u8, 0x10000> m_reg_float;
+
 	// List of possible targets for the instruction (entry shouldn't exist for simple instructions)
 	std::unordered_map<u32, std::basic_string<u32>, value_hash<u32, 2>> m_targets;
 

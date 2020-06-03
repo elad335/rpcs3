@@ -272,6 +272,7 @@ struct spu_iflag
 		use_ra = 1 << 8,
 		use_rb = 1 << 9,
 		use_rc = 1 << 10,
+		float_dst = 1 << 11,
 	};
 
 	enum flag
@@ -338,7 +339,7 @@ struct spu_iflag
 		DFNMS,
 		DFMS,
 		DFNMA,
-		FMA,
+		FMA = DFNMA | float_dst,
 		FNMS,
 		FMS,
 
@@ -403,15 +404,15 @@ struct spu_iflag
 		BI,
 		BISLED,
 		BISL,
+		FSCRWR,
+		CFLTS = FSCRWR | float_dst,
+		CFLTU,
+		CSFLT,
+		CUFLT,
 		FREST,
 		FRSQEST,
-		CSFLT,
-		CFLTS,
-		CUFLT,
-		CFLTU,
 		FRDS,
 		FESD,
-		FSCRWR,
 
 		HEQ = use_ra | use_rb,
 		HGT,
@@ -470,17 +471,17 @@ struct spu_iflag
 		CLGTB,
 		CLGTH,
 		CLGT,
-		FA,
-		DFA,
-		FS,
-		DFS,
-		FM,
-		DFM,
 		FI,
 		FCEQ,
 		FCMEQ,
 		FCGT,
 		FCMGT,
+		DFA,
+		DFS,
+		DFM,
+		FA = DFM | float_dst,
+		FS,
+		FM,
 	};
 
 	// Enable address-of operator for spu_decoder<>
