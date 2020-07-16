@@ -135,7 +135,7 @@ namespace rsx
 			u32 get_current_arg_ptr() const { return m_args_ptr; };
 			u32 get_remaining_args_count() const { return m_remaining_commands; }
 			void inc_get(bool wait);
-			void set_get(u32 get);
+			bool set_get(u32 get);
 			void abort();
 			template <bool = true> u32 read_put();
 

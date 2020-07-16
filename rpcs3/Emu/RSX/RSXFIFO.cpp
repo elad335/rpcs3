@@ -49,25 +49,41 @@ namespace rsx
 			}
 		}
 
-		void FIFO_control::set_get(u32 get)
+		bool FIFO_control::set_get(u32 get)
 		{
-			if (m_ctrl->get == get)
+			struct alignas(8) putget
 			{
-				if (const u32 addr = m_iotable->get_addr(m_memwatch_addr); addr + 1)
+				be_t<u32> put, get;
+			};
+
+			return reinterpret_cast<atomic_t<putget>*>(&m_ctrl->put)->atomic_op([&](putget& val)
+			{
+				m_memwatch_addr = 0;
+				m_remaining_commands = 0;
+
+				val.put &= -4;
+
+				if (val.put == val.get)
 				{
-					m_memwatch_addr = get;
-					m_memwatch_cmp = vm::read32(addr);
+					__debugbreak();
+					return false;
 				}
 
-				return;
-			}
-
-			// Update ctrl registers
-			m_ctrl->get.release(m_internal_get = get);
-			m_remaining_commands = 0;
-
-			// Clear memwatch spinner
-			m_memwatch_addr = 0;
+				if (val.get == get)
+				{
+					if (const u32 addr = m_iotable->get_addr(m_memwatch_addr); addr + 1)
+					{
+						m_memwatch_addr = get;
+						m_memwatch_cmp = vm::read32(addr);
+					}
+				}
+				else
+				{
+					val.get = get;
+				}
+				
+				return true;
+			});
 		}
 
 		bool FIFO_control::read_unsafe(register_pair& data)
@@ -484,7 +500,13 @@ namespace rsx
 					return;
 				}
 
-				fifo_ctrl->set_get(std::exchange(fifo_ret_addr, RSX_CALL_STACK_EMPTY));
+				const u32 newget = std::exchange(fifo_ret_addr, RSX_CALL_STACK_EMPTY);
+
+				if (!fifo_ctrl->set_get(newget))
+				{
+					fifo_ret_addr = newget;
+				}
+
 				return;
 			}
 
