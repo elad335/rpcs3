@@ -149,9 +149,55 @@ namespace rsx
 				m_memwatch_cmp = 0;
 			}
 
-			if (const u32 addr = m_iotable->get_addr(m_internal_get); addr + 1)
+			if (u32 addr = m_iotable->get_addr(m_internal_get); addr != umax)
 			{
-				m_cmd = vm::read32(addr);
+				const auto ptr = vm::_ptr<u32>(addr);
+				m_cmd = *ptr;
+
+				while (!m_cmd)
+				{
+					u32 i = 1;
+
+					if (u32 align = addr % 16)
+					{
+						for (u32 align_end = (16 - (addr & 15)) / 4; i < align_end; i++)
+						{
+							if (auto cmd = ptr[i])
+							{
+								m_cmd = cmd;
+								break;
+							}
+						}
+
+						if (m_cmd)
+						{
+							m_ctrl->get.release(std::min<u32>(m_internal_get + align, put));
+							break;
+						}
+					}
+
+					if (u32 end = std::min<u32>((0x100000 - ((addr & 0xfffff) + 15)) / 16, ::aligned_div(put - m_internal_get, 16)))
+					{
+						const v128 zero{};
+
+						for (int j = 0; j < end ; j++)
+						{
+							if (auto cmds = v128::loadu(ptr, j), mask = v128::eq32(cmds, zero);
+								_mm_movemask_ps(mask.vf))
+							{
+								const u32 index = std::countr_zero(_mm_movemask_ps(mask.vf));
+								i += 1 + index + j * 4; 
+								m_cmd = cmds._u32[index];
+								break;
+							}
+						}
+
+						m_ctrl->get.release(std::min<u32>(m_internal_get + i * 4, put));
+						break;
+					}
+
+					break;
+				}
 			}
 			else
 			{
