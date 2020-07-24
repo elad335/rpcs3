@@ -480,9 +480,16 @@ struct llvm_const_int
 
 	std::tuple<> match(llvm::Value*& value) const
 	{
-		if (value && value == llvm::ConstantInt::get(llvm_value_t<T>::get_type(value->getContext()), val, ForceSigned || llvm_value_t<T>::is_sint))
+		if constexpr (is_ok) if (value && value->getType() == llvm_value_t<T>::get_type(value->getContext()) && llvm::isa<llvm::ConstantInt>(value))
 		{
-			return {};
+			if (const auto ci = llvm::dyn_cast_or_null<llvm::ConstantInt>(value))
+			{
+				if (val == (ForceSigned ? ci->getSExtValue() : ci->getZExtValue()))
+				{
+					return {};
+				}
+			}
+			//return {};
 		}
 
 		value = nullptr;
@@ -1242,6 +1249,13 @@ inline llvm_and<T1, llvm_const_int<typename is_llvm_expr<T1>::type>> operator &(
 {
 	return {a1, {c}};
 }
+
+template <typename T1>
+inline llvm_and<llvm_const_int<typename is_llvm_expr<T1>::type>, T1> operator &(u64 c, T1&& a1)
+{
+	return {{c}, a1};
+}
+
 
 template <typename A1, typename A2, typename T = llvm_common_t<A1, A2>>
 struct llvm_or

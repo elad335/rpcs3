@@ -3006,7 +3006,7 @@ bool ppu_interpreter::ADDI(ppu_thread& ppu, ppu_opcode_t op)
 
 bool ppu_interpreter::ADDIS(ppu_thread& ppu, ppu_opcode_t op)
 {
-	ppu.gpr[op.rd] = op.ra ? ppu.gpr[op.ra] + (op.simm16 * 65536) : (op.simm16 * 65536);
+	ppu.gpr[op.rd] = op.ra ? ppu.gpr[op.ra] + (op.simm16 * 65536ll) : (op.simm16 * 65536ll);
 	return true;
 }
 

@@ -603,6 +603,19 @@ void PPUTranslator::WriteMemory(Value* addr, Value* value, bool is_be, u32 align
 	const auto type = value->getType();
 	const u32 size = ::narrow<u32>(+type->getPrimitiveSizeInBits(), HERE);
 
+	if (size == 32)
+	{
+		value_t<u64> v;
+		v.value = addr;
+		if (m_addr == 0x23A8u) __debugbreak();
+		//zext<u64>(match<u32>() << 20) + splat<u64>(0xFFFF'FFFF'E004'0000u))
+		if (auto [ok, x, y] = match_expr(v, (splat<u64>(UINT32_MAX) & ((zext<u64>(match<u32>() << 20) + splat<u64>(0xFFFF'FFFF'E004'0000u))+ match<u64>())/*splat<u64>(0x3004)*/) + splat<u64>(0))
+			; ok)
+		{
+			__debugbreak();
+		}
+	}
+
 	if (is_be ^ m_is_be && size > 8)
 	{
 		// Bitcast, byteswap
@@ -1919,7 +1932,7 @@ void PPUTranslator::ADDI(ppu_opcode_t op)
 
 void PPUTranslator::ADDIS(ppu_opcode_t op)
 {
-	Value* imm = m_ir->getInt64(op.simm16 << 16);
+	Value* imm = m_ir->getInt64(op.simm16 * 65536ll);
 
 	if (m_rel && (m_rel->type >= 4u && m_rel->type <= 6u))
 	{
@@ -3572,6 +3585,7 @@ void PPUTranslator::STW(ppu_opcode_t op)
 		m_rel = nullptr;
 	}
 
+	if (op.opcode == 0x90040000u) __debugbreak();
 	const auto value = GetGpr(op.rs, 32);
 	const auto addr = op.ra ? m_ir->CreateAdd(GetGpr(op.ra), imm) : imm;
 	WriteMemory(addr, value);

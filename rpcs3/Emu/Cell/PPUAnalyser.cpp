@@ -2172,7 +2172,7 @@ void ppu_acontext::ADDI(ppu_opcode_t op)
 
 void ppu_acontext::ADDIS(ppu_opcode_t op)
 {
-	gpr[op.rd] = op.ra ? gpr[op.ra] + spec_gpr::fixed(op.simm16 * 65536) : spec_gpr::fixed(op.simm16 * 65536);
+	gpr[op.rd] = op.ra ? gpr[op.ra] + spec_gpr::fixed(op.simm16 * 65536ll) : spec_gpr::fixed(op.simm16 * 65536ll);
 }
 
 void ppu_acontext::BC(ppu_opcode_t op)
