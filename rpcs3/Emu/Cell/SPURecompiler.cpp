@@ -4319,6 +4319,13 @@ public:
 			const auto cond = m_ir->CreateICmpNE(m_ir->CreateLoad(pu64), m_ir->getInt64(static_cast<u64>(func.data[1]) << 32 | func.data[0]));
 			m_ir->CreateCondBr(cond, label_diff, label_body, m_md_unlikely);
 		}
+		else if (func.data.size() == 4 && !_mm_movemask_ps(v128::eq32(v128::loadu(fun.data.data()), v128{}).vf))
+		{
+			const auto pu128 = m_ir->CreateBitCast(m_ir->CreateGEP(m_lsptr, m_base_pc), get_type<u32(*)[4]>());
+			const auto data = v128::loadu(fun.data.data());
+			const auto cond = m_ir->CreateICmpNE(m_ir->CreateLoad(pu128), make_const_vector(data, get_type<u32(*)[4]>()));
+			m_ir->CreateCondBr(cond, label_diff, label_body, m_md_unlikely);
+		}
 		else
 		{
 			u32 starta = start;

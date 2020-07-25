@@ -2890,6 +2890,16 @@ public:
 		return result;
 	}
 
+	void make_breakpoint()
+	{
+		m_ir->CreateCall(m_module->getOrInsertFunction("llvm.debugtrap", get_type<void>()).getCallee(), {});
+	}
+
+	void make_trap()
+	{
+		m_ir->CreateCall(m_module->getOrInsertFunction("llvm.trap", get_type<void>()).getCallee(), {});
+	}
+
 	llvm::Value* load_const(llvm::GlobalVariable* g, llvm::Value* i)
 	{
 		return m_ir->CreateLoad(m_ir->CreateGEP(g, {m_ir->getInt64(0), m_ir->CreateZExtOrTrunc(i, get_type<u64>())}));
