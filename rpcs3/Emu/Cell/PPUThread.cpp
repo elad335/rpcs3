@@ -1071,6 +1071,10 @@ static void ppu_trace(u64 addr)
 template <typename T>
 static T ppu_load_acquire_reservation(ppu_thread& ppu, u32 addr)
 {
+	extern shared_mutex g_cell_mutex;
+	ppu.state += cpu_flag::wait;
+	std::lock_guard lock(g_cell_mutex);
+
 	// Always load aligned 64-bit value (unaligned reservation will fail to store)
 	auto& data = vm::_ref<const atomic_be_t<u64>>(addr & -8);
 	const u64 size_off = (sizeof(T) * 8) & 63;
@@ -1244,12 +1248,16 @@ static T ppu_load_acquire_reservation(ppu_thread& ppu, u32 addr)
 
 extern u32 ppu_lwarx(ppu_thread& ppu, u32 addr)
 {
-	return ppu_load_acquire_reservation<u32>(ppu, addr);
+	const auto res = ppu_load_acquire_reservation<u32>(ppu, addr);
+	ppu.test_stopped();
+	return res;
 }
 
 extern u64 ppu_ldarx(ppu_thread& ppu, u32 addr)
 {
-	return ppu_load_acquire_reservation<u64>(ppu, addr);
+	const auto res = ppu_load_acquire_reservation<u64>(ppu, addr);
+	ppu.test_stopped();
+	return res;
 }
 
 const auto ppu_stdcx_tx = build_function_asm<u32(*)(u32 raddr, u64 rtime, u64 rdata, u64 value)>([](asmjit::X86Assembler& c, auto& args)
@@ -1546,6 +1554,10 @@ const auto ppu_stdcx_accurate_tx = build_function_asm<u32(*)(u32 raddr, u64 rtim
 template <typename T>
 static bool ppu_store_reservation(ppu_thread& ppu, u32 addr, u64 reg_value)
 {
+	extern shared_mutex g_cell_mutex;
+	ppu.state += cpu_flag::wait;
+	std::lock_guard lock(g_cell_mutex);
+
 	auto& data = vm::_ref<atomic_be_t<u64>>(addr & -8);
 	constexpr u64 size_off = (sizeof(T) * 8) & 63;
 	const u64 old_data = ppu.use_128_reservations ? +reinterpret_cast<be_t<u64>&>(ppu.rdata_128[addr & 0x78]) : ppu.rdata;
@@ -1732,12 +1744,16 @@ static bool ppu_store_reservation(ppu_thread& ppu, u32 addr, u64 reg_value)
 
 extern bool ppu_stwcx(ppu_thread& ppu, u32 addr, u32 reg_value)
 {
-	return ppu_store_reservation<u32>(ppu, addr, reg_value);
+	const bool res = ppu_store_reservation<u32>(ppu, addr, reg_value);
+	ppu.test_stopped();
+	return res;
 }
 
 extern bool ppu_stdcx(ppu_thread& ppu, u32 addr, u64 reg_value)
 {
-	return ppu_store_reservation<u64>(ppu, addr, reg_value);
+	const bool res = ppu_store_reservation<u64>(ppu, addr, reg_value);
+	ppu.test_stopped();
+	return res;
 }
 
 extern void ppu_initialize()

@@ -27,6 +27,8 @@
 #include <atomic>
 #include <thread>
 
+shared_mutex g_cell_mutex;
+
 template <>
 void fmt_class_string<mfc_atomic_status>::format(std::string& out, u64 arg)
 {
@@ -1704,6 +1706,9 @@ void spu_thread::do_putlluc(const spu_mfc_cmd& args)
 
 void spu_thread::do_mfc(bool wait)
 {
+	state += cpu_flag::wait;
+	std::lock_guard glock(g_cell_mutex);
+
 	u32 removed = 0;
 	u32 barrier = 0;
 	u32 fence = 0;
@@ -1845,6 +1850,9 @@ bool spu_thread::process_mfc_cmd()
 
 		thread_ctrl::wait();
 	}
+
+	state += cpu_flag::wait;
+	std::lock_guard glock(g_cell_mutex);
 
 	spu::scheduler::concurrent_execution_watchdog watchdog(*this);
 	spu_log.trace("DMAC: cmd=%s, lsa=0x%x, ea=0x%llx, tag=0x%x, size=0x%x", ch_mfc_cmd.cmd, ch_mfc_cmd.lsa, ch_mfc_cmd.eal, ch_mfc_cmd.tag, ch_mfc_cmd.size);
