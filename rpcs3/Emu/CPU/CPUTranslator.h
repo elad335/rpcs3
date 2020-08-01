@@ -157,12 +157,12 @@ struct llvm_value_t
 
 	llvm::Value* value;
 
-	// llvm_value_t() = default;
+	llvm_value_t() = default;
 
-	// llvm_value_t(llvm::Value* value)
-	// 	: value(value)
-	// {
-	// }
+	llvm_value_t(llvm::Value* value)
+		: value(value)
+	{
+	}
 };
 
 template <>
