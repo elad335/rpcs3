@@ -97,20 +97,17 @@ public:
 		// Pack CR bits
 		u32 pack() const
 		{
-			u32 result{};
-
-			for (u32 bit : bits)
-			{
-				result <<= 1;
-				result |= bit;
-			}
-
-			return result;
+			auto lanes = reinterpret_cast<const be_t<v128>*>(bits);
+			const u32 mh = _mm_movemask_epi8(_mm_slli_epi64(lanes[0].value().vi, 7));
+			const u32 ml = _mm_movemask_epi8(_mm_slli_epi64(lanes[1].value().vi, 7));
+			return (mh << 16) | ml;
 		}
 
 		// Unpack CR bits
 		void unpack(u32 value)
 		{
+			value = std::bit_cast<be_t<u32>>(value);
+
 			for (u8& b : bits)
 			{
 				b = value & 0x1;

@@ -3408,11 +3408,7 @@ bool ppu_interpreter::MFOCRF(ppu_thread& ppu, ppu_opcode_t op)
 	else
 	{
 		// MFCR
-		auto* lanes = reinterpret_cast<be_t<v128>*>(+ppu.cr.bits);
-		const u32 mh = _mm_movemask_epi8(_mm_slli_epi64(lanes[0].value().vi, 7));
-		const u32 ml = _mm_movemask_epi8(_mm_slli_epi64(lanes[1].value().vi, 7));
-
-		ppu.gpr[op.rd] = (mh << 16) | ml;
+		ppu.gpr[op.rd] = ppu.cr.pack();
 	}
 
 	return true;
