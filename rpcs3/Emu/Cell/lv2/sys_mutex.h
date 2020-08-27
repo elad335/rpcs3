@@ -94,7 +94,7 @@ struct lv2_mutex final : lv2_obj
 		return CELL_EBUSY;
 	}
 
-	bool try_own(cpu_thread& cpu, u32 id)
+	cpu_thread* try_own(cpu_thread& cpu, u32 id)
 	{
 		if (owner.fetch_op([&](u32& val)
 		{
@@ -109,10 +109,10 @@ struct lv2_mutex final : lv2_obj
 		}))
 		{
 			sq.emplace_back(&cpu);
-			return false;
+			return nullptr;
 		}
 
-		return true;
+		return &cpu;
 	}
 
 	CellError try_unlock(u32 id)

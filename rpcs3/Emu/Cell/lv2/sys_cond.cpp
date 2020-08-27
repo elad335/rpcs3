@@ -119,22 +119,26 @@ error_code sys_cond_signal_all(ppu_thread& ppu, u32 cond_id)
 	{
 		if (cond.waiters)
 		{
+			decltype(cons.sq) sq;
+
 			std::lock_guard lock(cond.mutex->mutex);
 
-			cpu_thread* result = nullptr;
 			cond.waiters -= ::size32(cond.sq);
+			sq = std::move(cond.sq);
 
-			while (const auto cpu = cond.schedule<ppu_thread>(cond.sq, SYS_SYNC_PRIORITY))
+			if (auto result = cond.schedule<ppu_thread>(sq, SYS_SYNC_PRIORITY))
 			{
-				if (cond.mutex->try_own(*cpu, cpu->id))
+				result = cond.mutex->try_own(*result, result->id);
+
+				for (auto cpu : sq)
 				{
-					ensure(!std::exchange(result, cpu));
+					cond.mutex->try_own(*cpu, cpu->id);
 				}
-			}
 
-			if (result)
-			{
-				lv2_obj::awake(result);
+				if (result)
+				{
+					lv2_obj::awake(result);
+				}
 			}
 		}
 	});
