@@ -435,7 +435,7 @@ error_code sys_spu_thread_initialize(ppu_thread& ppu, vm::ptr<u32> thread, u32 g
 				// Hack: don't run more SPURS threads than specified.
 				group->max_run = g_cfg.core.max_spurs_threads;
 
-				spu_log.success("HACK: '%s' (0x%x) limited to %u threads.", group->name, group_id, +g_cfg.core.max_spurs_threads);
+				spu_log.success("HACK: '%s' (0x%x) limited to %u thread mask.", group->name, group_id, +g_cfg.core.max_spurs_threads);
 			}
 		}
 
@@ -718,13 +718,16 @@ error_code sys_spu_thread_group_start(ppu_thread& ppu, u32 id)
 
 	group->join_state = 0;
 	group->exit_status = 0;
-	group->running = max_threads;
 	group->set_terminate = false;
+
+	u32 running = 0;
 
 	for (auto& thread : group->threads)
 	{
 		if (thread)
 		{
+			running += !(max_threads & (1 << thread->index));
+ 
 			auto& args = group->args[thread->lv2_id >> 24];
 			auto& img = group->imgs[thread->lv2_id >> 24];
 
@@ -740,20 +743,15 @@ error_code sys_spu_thread_group_start(ppu_thread& ppu, u32 id)
 		}
 	}
 
+	group->running = running;
+
 	// Because SPU_THREAD_GROUP_STATUS_READY is not possible, run event is delivered immediately
 	// TODO: check data2 and data3
 	group->send_run_event(id, 0, 0);
 
-	u32 ran_threads = max_threads;
-
 	for (auto& thread : group->threads)
 	{
-		if (!ran_threads)
-		{
-			break;
-		}
-
-		if (thread && ran_threads--)
+		if (thread && !(max_threads & (1 << thread->index)))
 		{
 			thread->state -= cpu_flag::stop;
 			thread_ctrl::raw_notify(*thread);
