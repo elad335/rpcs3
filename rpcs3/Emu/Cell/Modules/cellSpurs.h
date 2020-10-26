@@ -1190,6 +1190,13 @@ struct alignas(128) CellSpursBarrier
 
 CHECK_SIZE_ALIGN(CellSpursBarrier, 128, 128);
 
+enum : u32
+{
+	SPURS_KERNEL_CTXT_ADDR = 0x100,
+	SPURS_TASKSET_CTXT_ADDR = 0x2700,
+	SPURS_JOBCHAIN_CTXT_ADDR = 0x2700,
+};
+
 // The SPURS kernel context. This resides at 0x100 of the LS.
 struct SpursKernelContext
 {
@@ -1269,6 +1276,7 @@ struct SpursJobChainContext
 	b8 unkFlag0;                                    // 0x4A83
 	u8 unk1[0x10];                                  // 0x4A84
 	vm::bptr<CellSpursJobChain> jobChain;           // 0x4A94
+	be_t<u32> kernelMgmtAddr;                       // 0x4A98
 
 	// TODO
 };

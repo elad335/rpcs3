@@ -40,6 +40,11 @@ static void spursKernelDispatchWorkload(spu_thread& spu, u64 widAndPollStatus);
 static bool spursKernelWorkloadExit(spu_thread& spu);
 bool spursKernelEntry(spu_thread& spu);
 
+SpursKernelContext* spursKernelCtxt(spu_thread& spu)
+{
+	return spu._ptr<SpursKernelContext>(SPURS_KERNEL_CTXT_ADDR);
+}
+
 //
 // SPURS system workload functions
 //
@@ -75,11 +80,22 @@ static s32 spursTasksetProcessSyscall(spu_thread& spu, u32 syscallNum, u32 args)
 static void spursTasksetInit(spu_thread& spu, u32 pollStatus);
 static s32 spursTasksetLoadElf(spu_thread& spu, u32* entryPoint, u32* lowestLoadAddr, u64 elfAddr, bool skipWriteableSegments);
 
+SpursTasksetContext* spursTasksetCtxt(spu_thread& spu)
+{
+	return spu._ptr<SpursTasksetContext>(SPURS_TASKSET_CTXT_ADDR);
+}
+
 //
 // SPURS jobchain policy module functions
 //
 bool spursJobChainEntry(spu_thread& spu);
 void spursJobchainPopUrgentCommand(spu_thread& spu);
+
+SpursJobChainContext* spursJobChainCtxt(spu_thread& spu)
+{
+	return spu._ptr<SpursJobChainContext>(SPURS_JOBCHAIN_CTXT_ADDR);
+}
+
 
 //----------------------------------------------------------------------------
 // SPURS utility functions
@@ -94,7 +110,7 @@ void cellSpursModulePutTrace(CellSpursTracePacket* packet, u32 dmaTagId)
 // Check for execution right requests
 u32 cellSpursModulePollStatus(spu_thread& spu, u32* status)
 {
-	auto ctxt = spu._ptr<SpursKernelContext>(0x100);
+	auto ctxt = spursKernelCtxt(spu);
 
 	spu.gpr[3]._u32[3] = 1;
 	if (ctxt->spurs->flags1 & SF1_32_WORKLOADS)
@@ -119,7 +135,7 @@ u32 cellSpursModulePollStatus(spu_thread& spu, u32* status)
 // Exit current workload
 void cellSpursModuleExit(spu_thread& spu)
 {
-	auto ctxt = spu._ptr<SpursKernelContext>(0x100);
+	auto ctxt = spursKernelCtxt(spu);
 	spu.pc = ctxt->exitToKernelAddr;
 
 	// TODO: use g_escape for actual long jump
@@ -176,7 +192,6 @@ void sys_spu_thread_exit(spu_thread& spu, s32 status)
 {
 	// Cancel any pending status update requests
 	spu.set_ch_value(MFC_WrTagUpdate, 0);
-	while (spu.get_ch_count(MFC_RdTagStat) != 1);
 	spu.get_ch_value(MFC_RdTagStat);
 
 	// Wait for all pending DMA operations to complete
@@ -192,7 +207,6 @@ void sys_spu_thread_group_exit(spu_thread& spu, s32 status)
 {
 	// Cancel any pending status update requests
 	spu.set_ch_value(MFC_WrTagUpdate, 0);
-	while (spu.get_ch_count(MFC_RdTagStat) != 1);
 	spu.get_ch_value(MFC_RdTagStat);
 
 	// Wait for all pending DMA operations to complete
@@ -258,7 +272,7 @@ s32 sys_spu_thread_switch_system_module(spu_thread& spu, u32 status)
 // Select a workload to run
 bool spursKernel1SelectWorkload(spu_thread& spu)
 {
-	const auto ctxt = spu._ptr<SpursKernelContext>(0x100);
+	const auto ctxt = spursKernelCtxt(spu);
 
 	// The first and only argument to this function is a boolean that is set to false if the function
 	// is called by the SPURS kernel and set to true if called by cellSpursModulePollStatus.
@@ -442,7 +456,7 @@ bool spursKernel1SelectWorkload(spu_thread& spu)
 // Select a workload to run
 bool spursKernel2SelectWorkload(spu_thread& spu)
 {
-	const auto ctxt = spu._ptr<SpursKernelContext>(0x100);
+	const auto ctxt = spursKernelCtxt(spu);
 
 	// The first and only argument to this function is a boolean that is set to false if the function
 	// is called by the SPURS kernel and set to true if called by cellSpursModulePollStatus.
@@ -615,7 +629,7 @@ bool spursKernel2SelectWorkload(spu_thread& spu)
 // SPURS kernel dispatch workload
 void spursKernelDispatchWorkload(spu_thread& spu, u64 widAndPollStatus)
 {
-	const auto ctxt = spu._ptr<SpursKernelContext>(0x100);
+	const auto ctxt = spursKernelCtxt(spu);
 	auto isKernel2 = ctxt->spurs->flags1 & SF1_32_WORKLOADS ? true : false;
 
 	auto pollStatus = static_cast<u32>(widAndPollStatus);
@@ -667,7 +681,7 @@ void spursKernelDispatchWorkload(spu_thread& spu, u64 widAndPollStatus)
 // SPURS kernel workload exit
 bool spursKernelWorkloadExit(spu_thread& spu)
 {
-	const auto ctxt = spu._ptr<SpursKernelContext>(0x100);
+	const auto ctxt = spursKernelCtxt(spu);
 	auto isKernel2 = ctxt->spurs->flags1 & SF1_32_WORKLOADS ? true : false;
 
 	// Select next workload to run
@@ -688,7 +702,7 @@ bool spursKernelWorkloadExit(spu_thread& spu)
 // SPURS kernel entry point
 bool spursKernelEntry(spu_thread& spu)
 {
-	const auto ctxt = spu._ptr<SpursKernelContext>(0x100);
+	const auto ctxt = spursKernelCtxt(spu);
 	memset(ctxt, 0, sizeof(SpursKernelContext));
 
 	// Save arguments
@@ -870,7 +884,7 @@ void spursSysServiceIdleHandler(spu_thread& spu, SpursKernelContext* ctxt)
 // Main function for the system service
 void spursSysServiceMain(spu_thread& spu, u32 pollStatus)
 {
-	const auto ctxt = spu._ptr<SpursKernelContext>(0x100);
+	const auto ctxt = spursKernelCtxt(spu);
 
 	if (!ctxt->spurs.aligned())
 	{
@@ -1314,7 +1328,7 @@ enum SpursTasksetRequest
 // Taskset PM entry point
 bool spursTasksetEntry(spu_thread& spu)
 {
-	auto ctxt = spu._ptr<SpursTasksetContext>(0x2700);
+	auto ctxt = spursTasksetCtxt(spu);
 	auto kernelCtxt = spu._ptr<SpursKernelContext>(spu.gpr[3]._u32[3]);
 
 	auto arg = spu.gpr[4]._u64[1];
@@ -1349,7 +1363,7 @@ bool spursTasksetEntry(spu_thread& spu)
 // Entry point into the Taskset PM for task syscalls
 bool spursTasksetSyscallEntry(spu_thread& spu)
 {
-	auto ctxt = spu._ptr<SpursTasksetContext>(0x2700);
+	auto ctxt = spursTasksetCtxt(spu);
 
 	{
 		// Save task context
@@ -1376,7 +1390,7 @@ bool spursTasksetSyscallEntry(spu_thread& spu)
 // Resume a task
 void spursTasksetResumeTask(spu_thread& spu)
 {
-	auto ctxt = spu._ptr<SpursTasksetContext>(0x2700);
+	auto ctxt = spursTasksetCtxt(spu);
 
 	// Restore task context
 	spu.gpr[0] = ctxt->savedContextLr;
@@ -1392,7 +1406,7 @@ void spursTasksetResumeTask(spu_thread& spu)
 // Start a task
 void spursTasksetStartTask(spu_thread& spu, CellSpursTaskArgument& taskArgs)
 {
-	auto ctxt = spu._ptr<SpursTasksetContext>(0x2700);
+	auto ctxt = spursTasksetCtxt(spu);
 	auto taskset = spu._ptr<CellSpursTaskset>(0x2700);
 
 	spu.gpr[2].clear();
@@ -1410,8 +1424,8 @@ void spursTasksetStartTask(spu_thread& spu, CellSpursTaskArgument& taskArgs)
 // Process a request and update the state of the taskset
 s32 spursTasksetProcessRequest(spu_thread& spu, s32 request, u32* taskId, u32* isWaiting)
 {
-	auto kernelCtxt = spu._ptr<SpursKernelContext>(0x100);
-	auto ctxt = spu._ptr<SpursTasksetContext>(0x2700);
+	auto kernelCtxt = spursKernelCtxt(spu);
+	auto ctxt = spursTasksetCtxt(spu);
 
 	s32 rc = CELL_OK;
 	s32 numNewlyReadyTasks = 0;
@@ -1642,7 +1656,7 @@ bool spursTasksetPollStatus(spu_thread& spu)
 // Exit the Taskset PM
 void spursTasksetExit(spu_thread& spu)
 {
-	auto ctxt = spu._ptr<SpursTasksetContext>(0x2700);
+	auto ctxt = spursTasksetCtxt(spu);
 
 	// Trace - STOP
 	CellSpursTracePacket pkt{};
@@ -1663,7 +1677,7 @@ void spursTasksetExit(spu_thread& spu)
 // Invoked when a task exits
 void spursTasksetOnTaskExit(spu_thread& spu, u64 addr, u32 taskId, s32 exitCode, u64 args)
 {
-	auto ctxt = spu._ptr<SpursTasksetContext>(0x2700);
+	auto ctxt = spursTasksetCtxt(spu);
 
 	std::memcpy(spu._ptr<void>(0x10000), vm::base(addr & -0x80), (addr & 0x7F) << 11);
 
@@ -1677,7 +1691,7 @@ void spursTasksetOnTaskExit(spu_thread& spu, u64 addr, u32 taskId, s32 exitCode,
 // Save the context of a task
 s32 spursTasketSaveTaskContext(spu_thread& spu)
 {
-	auto ctxt = spu._ptr<SpursTasksetContext>(0x2700);
+	auto ctxt = spursTasksetCtxt(spu);
 	auto taskInfo = spu._ptr<CellSpursTaskset::TaskInfo>(0x2780);
 
 	//spursDmaWaitForCompletion(spu, 0xFFFFFFFF);
@@ -1740,7 +1754,7 @@ s32 spursTasketSaveTaskContext(spu_thread& spu)
 // Taskset dispatcher
 void spursTasksetDispatch(spu_thread& spu)
 {
-	const auto ctxt = spu._ptr<SpursTasksetContext>(0x2700);
+	const auto ctxt = spursTasksetCtxt(spu);
 	const auto taskset = spu._ptr<CellSpursTaskset>(0x2700);
 
 	u32 taskId;
@@ -1868,7 +1882,7 @@ void spursTasksetDispatch(spu_thread& spu)
 // Process a syscall request
 s32 spursTasksetProcessSyscall(spu_thread& spu, u32 syscallNum, u32 args)
 {
-	auto ctxt = spu._ptr<SpursTasksetContext>(0x2700);
+	auto ctxt = spursTasksetCtxt(spu);
 	auto taskset = spu._ptr<CellSpursTaskset>(0x2700);
 
 	// If the 0x10 bit is set in syscallNum then its the 2nd version of the
@@ -1977,8 +1991,8 @@ s32 spursTasksetProcessSyscall(spu_thread& spu, u32 syscallNum, u32 args)
 // Initialise the Taskset PM
 void spursTasksetInit(spu_thread& spu, u32 pollStatus)
 {
-	auto ctxt = spu._ptr<SpursTasksetContext>(0x2700);
-	auto kernelCtxt = spu._ptr<SpursKernelContext>(0x100);
+	auto ctxt = spursTasksetCtxt(spu);
+	auto kernelCtxt = spursKernelCtxt(spu);
 
 	kernelCtxt->moduleId[0] = 'T';
 	kernelCtxt->moduleId[1] = 'K';
@@ -2058,19 +2072,29 @@ s32 spursTasksetLoadElf(spu_thread& spu, u32* entryPoint, u32* lowestLoadAddr, u
 //----------------------------------------------------------------------------
 bool spursJobChainEntry(spu_thread& spu)
 {
-	const auto ctxt = spu._ptr<SpursJobChainContext>(0x4a00);
-	auto kernelCtxt = spu._ptr<SpursKernelContext>(spu.gpr[3]._u32[3]);
+	const auto ctxt = spursJobChainCtxt(spu);
+	auto kernelCtxt = spu._ptr<SpursKernelContext>(spu.gpr[3]._u32[3] & 0x3fff0);
 
 	auto arg = spu.gpr[4]._u64[1];
-	auto pollStatus = spu.gpr[5]._u32[3];
+	//auto pollStatus = spu.gpr[5]._u32[3]; // Being overwritten to 0
 
 	// TODO
 	return false;
 }
 
+void spursJobChainInit(spu_thread& spu)
+{
+	const auto ctxt = spursJobChainCtxt(spu);
+	auto kernelCtxt = spu._ptr<SpursKernelContext>(spu.gpr[3]._u32[3] & 0x3fff0);
+
+	spursDma(spu, MFC_GET_CMD, ctxt->jobChain.addr(), 0x4a00, 256, kernelCtxt->dmaTagId);
+	//spursDmaWaitForCompletion(spu, 1u << kernelCtxt->dmaTagId);
+
+}
+
 void spursJobchainPopUrgentCommand(spu_thread& spu)
 {
-	const auto ctxt = spu._ptr<SpursJobChainContext>(0x4a00);
+	const auto ctxt = spursJobChainCtxt(spu);
 	const auto jc = vm::unsafe_ptr_cast<CellSpursJobChain_x00>(+ctxt->jobChain);
 
 	const bool alterQueue = ctxt->unkFlag0;
