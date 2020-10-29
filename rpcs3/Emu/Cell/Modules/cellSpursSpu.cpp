@@ -2078,7 +2078,8 @@ bool spursJobChainEntry(spu_thread& spu)
 	auto arg = spu.gpr[4]._u64[1];
 	//auto pollStatus = spu.gpr[5]._u32[3]; // Being overwritten to 0
 
-	// TODO
+	spursJobChainInit(spu);
+
 	return false;
 }
 
@@ -2090,6 +2091,9 @@ void spursJobChainInit(spu_thread& spu)
 	spursDma(spu, MFC_GET_CMD, ctxt->jobChain.addr(), 0x4a00, 256, kernelCtxt->dmaTagId);
 	//spursDmaWaitForCompletion(spu, 1u << kernelCtxt->dmaTagId);
 
+	ctxt->spuNum = spursKernelCtxt(spu)->spuNum;
+	ctxt->zero0 = 0;
+	
 }
 
 void spursJobchainPopUrgentCommand(spu_thread& spu)
