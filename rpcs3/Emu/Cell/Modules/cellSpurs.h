@@ -1272,6 +1272,7 @@ CHECK_SIZE(SpursTasksetContext, 0x900);
 struct SpursJobChainContext
 {
 	be_t<u32> jobSize; // 0x4A80
+	be_t<u32> padding0[3]; // 0x4A84
 	u8 tempAreaJobChain[0x80];                      // 0x4A00
 	be_t<u32> spuNum;                               // 0x4A80
 	be_t<u32> zero0;                                // 0x4A84

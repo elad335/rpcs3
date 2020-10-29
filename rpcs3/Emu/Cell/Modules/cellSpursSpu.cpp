@@ -2091,9 +2091,13 @@ void spursJobChainInit(spu_thread& spu)
 	spursDma(spu, MFC_GET_CMD, ctxt->jobChain.addr(), 0x4a00, 256, kernelCtxt->dmaTagId);
 	//spursDmaWaitForCompletion(spu, 1u << kernelCtxt->dmaTagId);
 
+	const auto ls = reinterpret_cast<CellSpursJobChain_x00*>(ctxt->tempAreaJobChain);
+
 	ctxt->spuNum = spursKernelCtxt(spu)->spuNum;
 	ctxt->zero0 = 0;
-	
+	ctxt->jobSize = u32{ls->val2C & 0x70} * 8 + 0x100;
+	(ctxt->jobSize * 4 + 0x3ffU & 0x3c00) - 0x3f800;
+
 }
 
 void spursJobchainPopUrgentCommand(spu_thread& spu)
