@@ -2096,8 +2096,14 @@ void spursJobChainInit(spu_thread& spu)
 	ctxt->spuNum = spursKernelCtxt(spu)->spuNum;
 	ctxt->zero0 = 0;
 	ctxt->jobSize = u32{ls->val2C & 0x70} * 8 + 0x100;
-	(ctxt->jobSize * 4 + 0x3ffU & 0x3c00) - 0x3f800;
-
+	const u32 size = 0x3f800 - (ctxt->jobSize * 4 + 0x3ffU & 0x3c00);
+	ctxt->size2 = size >> 10;
+	{
+		auto res = _mm_set1_epi8(size >> 10);
+		std::memcpy(&ctxt->size2_copy, &res, 16);
+	}
+	std::memset(ctxt->unk_b20, 0, 16);
+	FUNC()
 }
 
 void spursJobchainPopUrgentCommand(spu_thread& spu)

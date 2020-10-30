@@ -1275,11 +1275,14 @@ struct SpursJobChainContext
 	be_t<u32> padding0[3]; // 0x4A84
 	u8 tempAreaJobChain[0x80];                      // 0x4A00
 	be_t<u32> spuNum;                               // 0x4A80
-	be_t<u32> zero0;                                // 0x4A84
-	u8 unk1[0xc];                                   // 0x4A84
+	u8 padding1[3];                                 // 0x7A84 (zero init)
+	u8 size2;                                       // 0x4A87
+	u8 val_x13;                                     // 0x4A88
+	u8 unk1[0xb];                                   // 0x4A89
 	vm::bptr<CellSpursJobChain> jobChain;           // 0x4A94
 	be_t<u32> kernelMgmtAddr;                       // 0x4A98
-
+	u8 size2_copy[16]; // 0x4B10
+	u8 unk_b20[16]; // 0x4B20 (zeto init)
 	// TODO
 };
 
