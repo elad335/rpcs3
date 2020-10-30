@@ -2086,7 +2086,10 @@ bool spursJobChainEntry(spu_thread& spu)
 void spursJobChainInit(spu_thread& spu)
 {
 	const auto ctxt = spursJobChainCtxt(spu);
-	auto kernelCtxt = spu._ptr<SpursKernelContext>(spu.gpr[3]._u32[3] & 0x3fff0);
+	auto kernelMgmtAddr = spu.gpr[3]._u32[3];
+	auto kernelCtxt = spu._ptr<SpursKernelContext>(kernelMgmtAddr & 0x3fff0);
+
+	auto arg = spu.gpr[4]._u32[3];
 
 	spursDma(spu, MFC_GET_CMD, ctxt->jobChain.addr(), 0x4a00, 256, kernelCtxt->dmaTagId);
 	//spursDmaWaitForCompletion(spu, 1u << kernelCtxt->dmaTagId);
@@ -2094,7 +2097,9 @@ void spursJobChainInit(spu_thread& spu)
 	const auto ls = reinterpret_cast<CellSpursJobChain_x00*>(ctxt->tempAreaJobChain);
 
 	ctxt->spuNum = spursKernelCtxt(spu)->spuNum;
-	ctxt->zero0 = 0;
+	ctxt->kernelMgmtAddr = kernelMgmtAddr;
+	ctxt->jobChain.set(arg);
+	std::memset(ctxt->padding1, 0, 3);
 	ctxt->jobSize = u32{ls->val2C & 0x70} * 8 + 0x100;
 	const u32 size = 0x3f800 - (ctxt->jobSize * 4 + 0x3ffU & 0x3c00);
 	ctxt->size2 = size >> 10;
@@ -2102,8 +2107,9 @@ void spursJobChainInit(spu_thread& spu)
 		auto res = _mm_set1_epi8(size >> 10);
 		std::memcpy(&ctxt->size2_copy, &res, 16);
 	}
+	ctxt->val_x13 = 0x13;
 	std::memset(ctxt->unk_b20, 0, 16);
-	FUNC()
+	//FUNC()
 }
 
 void spursJobchainPopUrgentCommand(spu_thread& spu)
