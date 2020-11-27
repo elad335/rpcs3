@@ -27,7 +27,7 @@ public:
 Q_SIGNALS:
 	void BreakpointRequested(u32 loc);
 public:
-	debugger_list(QWidget* parent, std::shared_ptr<gui_settings> settings, breakpoint_handler* handler);
+	debugger_list(QWidget* parent, std::shared_ptr<gui_settings> settings);
 	void UpdateCPUData(cpu_thread* cpu, CPUDisAsm* disasm);
 public Q_SLOTS:
 	void ShowAddress(u32 addr, bool force = false);
@@ -48,7 +48,6 @@ private:
 
 	std::shared_ptr<gui_settings> xgui_settings;
 
-	breakpoint_handler* m_breakpoint_handler;
 	cpu_thread* m_cpu = nullptr;
 	CPUDisAsm* m_disasm;
 	QDialog* m_cmd_detail = nullptr;

@@ -1,4 +1,4 @@
-#include "stdafx.h"
+﻿#include "stdafx.h"
 #include "CPUThread.h"
 
 #include "Emu/System.h"
@@ -9,6 +9,13 @@
 #include "Emu/Cell/PPUThread.h"
 #include "Emu/Cell/SPUThread.h"
 #include "Emu/RSX/RSXThread.h"
+#include "Emu/Cell/PPUOpcodes.h"
+#include "Emu/Cell/SPUOpcodes.h"
+#include "Emu/Cell/PPUInterpreter.h"
+#include "Emu/Cell/SPUInterpreter.h"
+#include "Emu/Cell/PPUAnalyser.h"
+#include "Emu/Cell/SPUAnalyser.h"
+#include "rpcs3qt/breakpoint_handler.h"
 #include "Emu/perf_meter.hpp"
 
 #include "util/asm.hpp"
@@ -32,6 +39,14 @@ static thread_local u32 s_tls_thread_slot = -1;
 static thread_local u64 s_tls_sctr = -1;
 
 extern thread_local void(*g_tls_log_control)(const char* fmt, u64 progress);
+
+const ppu_decoder<ppu_interpreter_precise> g_ppu_interpreter_precise;
+const ppu_decoder<ppu_interpreter_fast> g_ppu_interpreter_fast;
+const ppu_decoder<ppu_itype> g_ppu_itype;
+
+const ppu_decoder<spu_interpreter_precise> g_spu_interpreter_precise;
+const ppu_decoder<spu_interpreter_fast> g_spu_interpreter_fast;
+const ppu_decoder<spu_itype> g_spu_itype;
 
 template <>
 void fmt_class_string<cpu_flag>::format(std::string& out, u64 arg)
@@ -605,6 +620,8 @@ void cpu_thread::cpu_wait(bs_t<cpu_flag> old)
 	thread_ctrl::wait_on(state, old);
 }
 
+thread_local bool in_cpu_work = false;
+
 bool cpu_thread::check_state() noexcept
 {
 	bool cpu_sleep_called = false;
@@ -742,6 +759,12 @@ bool cpu_thread::check_state() noexcept
 			}
 
 			ensure(cpu_can_stop || !retval);
+
+			if (state0 & cpu_flag::listen_memory)
+			{
+				retval |= cpu_work();
+			}
+
 			return retval;
 		}
 
@@ -951,6 +974,368 @@ std::vector<std::pair<u32, u32>> cpu_thread::dump_callstack_list() const
 std::string cpu_thread::dump_misc() const
 {
 	return fmt::format("Type: %s\n" "State: %s\n", id_type() == 1 ? "PPU" : id_type() == 2 ? "SPU" : "CPU", state.load());
+}
+
+bool cpu_thread::cpu_work()
+{
+	if (in_cpu_work) return false;
+
+	const struct work_guerd
+	{
+		const std::add_pointer_t<cpu_thread>& m_cpu;
+
+		work_guerd(const std::add_pointer_t<cpu_thread>& cpu) : m_cpu(cpu) { in_cpu_work = true; }
+		~work_guerd() { m_cpu->state -= cpu_flag::listen_memory + cpu_flag::ack_memory; in_cpu_work = false; }
+	} guard( this );
+
+	const auto bp_manage = g_fxo->get<breakpoint_handler>();
+	const auto _id = id;
+
+	if (_id >> 24 == 1)
+	{
+		auto& ppu = *static_cast<ppu_thread*>(this);
+
+		const auto& table = *(
+			g_cfg.core.ppu_decoder == ppu_decoder_type::precise ? &g_ppu_interpreter_precise.get_table() :
+				&g_ppu_interpreter_fast.get_table());
+
+		while (true)
+		{
+			const auto state0 = +state;
+
+			if (state0 - (cpu_flag::listen_memory + cpu_flag::ack_memory + cpu_flag::wait))
+			{
+				if (check_state())
+				{
+					return true;
+				}
+			}
+
+			if (!(state0 & cpu_flag::ack_memory))
+			{
+				state += cpu_flag::ack_memory;
+			}
+
+			const ppu_opcode_t op{vm::read32(ppu.cia)};
+
+			u32 msize = 0, addr = 0;
+			bp_type type = bp_type::read;
+
+			const auto func = table[ppu_decode(op.opcode)];
+
+			switch (g_ppu_itype.decode(op.opcode))
+			{
+			case ppu_itype::LSWX:
+			{
+				addr = ((op.ra ? ppu.gpr[op.ra] : 0) + ppu.gpr[op.rb]);
+				msize = ppu.xer.cnt & 0x7f; break;
+			}
+	
+			case ppu_itype::LSWI:
+			{
+				addr = ((op.ra ? ppu.gpr[op.ra] : 0) + ppu.gpr[op.rb]) & -16;
+				msize = op.rb ? op.rb : 32; break;
+			}
+	
+			case ppu_itype::LMW:
+			{
+				addr = (op.simm16 & ~3) + (op.ra ? ppu.gpr[op.ra] : 0);
+				msize = (32 - op.rd) * 4; break;
+			}
+
+			// Indexed optional RA
+			case ppu_itype::LVX:
+			case ppu_itype::LVEBX:
+			case ppu_itype::LVEHX:
+			case ppu_itype::LVEWX:
+			case ppu_itype::LVXL:
+			case ppu_itype::LVLXL:
+			case ppu_itype::LVLX:
+			case ppu_itype::LVRX:
+			case ppu_itype::LVRXL:
+			{
+				addr = ((op.ra ? ppu.gpr[op.ra] : 0) + ppu.gpr[op.rb]) & -16;
+				msize = 16; break;
+			}
+
+			case ppu_itype::LDX:
+			case ppu_itype::LDARX:
+			case ppu_itype::LFDX:
+			case ppu_itype::LDBRX:
+			{
+				addr = ((op.ra ? ppu.gpr[op.ra] : 0) + ppu.gpr[op.rb]);
+				msize = 8; break;
+			}
+
+			case ppu_itype::LWAX:
+			case ppu_itype::LWZX:
+			case ppu_itype::LWARX:
+			case ppu_itype::LFSX:
+			case ppu_itype::LWBRX:
+			{
+				addr = ((op.ra ? ppu.gpr[op.ra] : 0) + ppu.gpr[op.rb]);
+				msize = 4; break;
+			}
+
+			case ppu_itype::LHAX:
+			case ppu_itype::LHZX:
+			case ppu_itype::LHBRX:
+			{
+				addr = ((op.ra ? ppu.gpr[op.ra] : 0) + ppu.gpr[op.rb]);
+				msize = 2; break;
+			}
+
+			case ppu_itype::LBZX:
+			{
+				addr = ((op.ra ? ppu.gpr[op.ra] : 0) + ppu.gpr[op.rb]);
+				msize = 1; break;
+			}
+
+			// Indexed
+			case ppu_itype::LDUX:
+			case ppu_itype::LFDUX:
+			{
+				addr = ppu.gpr[op.ra] + ppu.gpr[op.rb];
+				msize = 8; break;
+			}
+
+			case ppu_itype::LWAUX:
+			case ppu_itype::LWZUX:
+			case ppu_itype::LFSUX:
+			{
+				addr = ppu.gpr[op.ra] + ppu.gpr[op.rb];
+				msize = 4; break;
+			}
+
+			case ppu_itype::LHAUX:
+			case ppu_itype::LHZUX:
+			{
+				addr = ppu.gpr[op.ra] + ppu.gpr[op.rb];
+				msize = 2; break;
+			}
+
+			case ppu_itype::LBZUX:
+			{
+				addr = ppu.gpr[op.ra] + ppu.gpr[op.rb];
+				msize = 1; break;
+			}
+
+			// Fixed offset optional RA
+			case ppu_itype::LD:
+			case ppu_itype::LFD:
+			{
+				addr = (op.simm16 & ~3) + (op.ra ? ppu.gpr[op.ra] : 0);
+				msize = 8; break;
+			}
+
+			case ppu_itype::LWA:
+			case ppu_itype::LWZ:
+			case ppu_itype::LFS:
+			{
+				addr = (op.simm16 & ~3) + (op.ra ? ppu.gpr[op.ra] : 0);
+				msize = 4; break;
+			}
+
+			case ppu_itype::LHA:
+			case ppu_itype::LHZ:
+			{
+				addr = (op.simm16 & ~3) + (op.ra ? ppu.gpr[op.ra] : 0);
+				msize = 2; break;
+			}
+
+			case ppu_itype::LBZ:
+			{
+				addr = (op.simm16 & ~3) + (op.ra ? ppu.gpr[op.ra] : 0);
+				msize = 1; break;
+			}
+
+			// Fixed offset with RA
+			case ppu_itype::LDU:
+			case ppu_itype::LFDU:
+			{
+				addr = (op.simm16 & ~3) + ppu.gpr[op.ra];
+				msize = 8; break;
+			}
+
+			case ppu_itype::LFSU:
+			case ppu_itype::LWZU:
+			{
+				addr = (op.simm16 & ~3) + ppu.gpr[op.ra];
+				msize = 4; break;
+			}
+
+			case ppu_itype::LHZU:
+			case ppu_itype::LHAU:
+			{
+				addr = (op.simm16 & ~3) + ppu.gpr[op.ra];
+				msize = 2; break;
+			}
+
+			case ppu_itype::LBZU:
+			{
+				addr = (op.simm16 & ~3) + ppu.gpr[op.ra];
+				msize = 1; break;
+			}
+
+			case ppu_itype::STVEBX:
+			case ppu_itype::STDX:
+			case ppu_itype::STWCX:
+			case ppu_itype::STWX:
+			case ppu_itype::STVEHX:
+			case ppu_itype::STDUX:
+			case ppu_itype::STWUX:
+			case ppu_itype::STVEWX:
+			case ppu_itype::STDCX:
+			case ppu_itype::STBX:
+			case ppu_itype::STVX:
+			case ppu_itype::STBUX:
+			case ppu_itype::STHX:
+			case ppu_itype::STHUX:
+			case ppu_itype::STVXL:
+			case ppu_itype::STVLX:
+			case ppu_itype::STDBRX:
+			case ppu_itype::STSWX:
+			case ppu_itype::STWBRX:
+			case ppu_itype::STFSX:
+			case ppu_itype::STVRX:
+			case ppu_itype::STFSUX:
+			case ppu_itype::STSWI:
+			case ppu_itype::STFDX:
+			case ppu_itype::STFDUX:
+			case ppu_itype::STVLXL:
+			case ppu_itype::STHBRX:
+			case ppu_itype::STVRXL:
+			case ppu_itype::STFIWX:
+			case ppu_itype::STW:
+			case ppu_itype::STWU:
+			case ppu_itype::STB:
+			case ppu_itype::STBU:
+			case ppu_itype::STH:
+			case ppu_itype::STHU:
+			case ppu_itype::STMW:
+			case ppu_itype::STFS:
+			case ppu_itype::STFSU:
+			case ppu_itype::STFD:
+			case ppu_itype::STFDU:
+			case ppu_itype::STD:
+			case ppu_itype::STDU:
+
+			case ppu_itype::UNK:
+			case ppu_itype::SC:
+			{
+				msize = -1;
+				addr = 0;
+				type = bp_type::write;
+				break;
+			}
+			}
+
+			if (msize)
+			{
+				const u64 _addr = u64{ppu.cia} << 32 | addr;
+
+				auto [has, any] = bp_manage->contains(_addr, _id, type);
+
+				if (!any)
+				{
+					break;
+				}
+
+				if (has)
+				{
+					if (has & bp_type::debug)
+					{
+						state += cpu_flag::dbg_pause;
+						check_state();
+					}
+					else if (msize != umax)
+					{
+						busy_wait();
+						continue;
+					}
+				}
+			}
+
+			func(ppu, op);
+		}
+	}
+	else if (_id >> 24 == 2)
+	{
+		auto& spu = *static_cast<spu_thread*>(this);
+
+		const auto& table = *(
+			g_cfg.core.spu_decoder == spu_decoder_type::precise ? &g_spu_interpreter_precise.get_table() :
+				&g_spu_interpreter_fast.get_table());
+
+		while (true)
+		{
+			const auto state0 = +state;
+
+			if (state0 - (cpu_flag::listen_memory + cpu_flag::ack_memory + cpu_flag::wait))
+			{
+				if (check_state())
+				{
+					return true;
+				}
+			}
+
+			if (!(state0 & cpu_flag::ack_memory))
+			{
+				state += cpu_flag::ack_memory;
+			}
+
+			const spu_opcode_t op{spu._ref<u32>(spu.pc)};
+
+			u32 msize = 0, addr = 0;
+			bp_type type = bp_type::read;
+
+			const auto func = table[spu_decode(op.opcode)];
+
+			switch (g_ppu_itype.decode(op.opcode))
+			{
+			case spu_itype::LQA:
+			case spu_itype::LQD:
+			case spu_itype::LQR:
+			case spu_itype::LQX:
+
+			case spu_itype::STQA:
+			case spu_itype::STQD:
+			case spu_itype::STQR:
+			case spu_itype::STQX:
+			default: break;
+			}
+
+			if (msize)
+			{
+				const u64 _addr = u64{spu.pc} << 32 | addr;
+
+				auto [has, any] = bp_manage->contains(_addr, _id, type);
+
+				if (!any)
+				{
+					break;
+				}
+
+				if (has)
+				{
+					if (has & bp_type::debug)
+					{
+						state += cpu_flag::dbg_pause;
+						check_state();
+					}
+					else
+					{
+						busy_wait();
+						continue;
+					}
+				}
+			}
+
+			func(spu, op);
+		}
+	}
+
+	return false;
 }
 
 bool cpu_thread::suspend_work::push(cpu_thread* _this) noexcept

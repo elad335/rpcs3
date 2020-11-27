@@ -18,6 +18,9 @@ enum class cpu_flag : u32
 	signal, // Thread received a signal (HLE)
 	memory, // Thread must unlock memory mutex
 
+	listen_memory,
+	ack_memory,
+
 	dbg_global_pause, // Emulation paused
 	dbg_pause, // Thread paused
 	dbg_step, // Thread forced to pause after one step (one instruction, etc)
@@ -148,6 +151,8 @@ public:
 
 	// Callback for function abortion stats on Emu.Stop()
 	virtual void cpu_on_stop() {}
+
+	bool cpu_work();
 
 	// For internal use
 	struct suspend_work

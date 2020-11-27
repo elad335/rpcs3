@@ -1,4 +1,4 @@
-#include "debugger_frame.h"
+﻿#include "debugger_frame.h"
 #include "register_editor_dialog.h"
 #include "instruction_editor_dialog.h"
 #include "memory_viewer_panel.h"
@@ -55,10 +55,9 @@ debugger_frame::debugger_frame(std::shared_ptr<gui_settings> settings, QWidget *
 	QHBoxLayout* hbox_b_main = new QHBoxLayout();
 	hbox_b_main->setContentsMargins(0, 0, 0, 0);
 
-	m_breakpoint_handler = new breakpoint_handler();
-	m_breakpoint_list = new breakpoint_list(this, m_breakpoint_handler);
+	m_breakpoint_list = new breakpoint_list(this);
 
-	m_debugger_list = new debugger_list(this, settings, m_breakpoint_handler);
+	m_debugger_list = new debugger_list(this, settings);
 	m_debugger_list->installEventFilter(this);
 
 	m_call_stack_list = new call_stack_list(this);
@@ -761,13 +760,6 @@ void debugger_frame::OnSelectUnit()
 
 void debugger_frame::DoUpdate()
 {
-	// Check if we need to disable a step over bp
-	if (auto cpu0 = get_cpu(); cpu0 && m_last_step_over_breakpoint != umax && cpu0->get_pc() == m_last_step_over_breakpoint)
-	{
-		m_breakpoint_handler->RemoveBreakpoint(m_last_step_over_breakpoint);
-		m_last_step_over_breakpoint = -1;
-	}
-
 	ShowPC();
 	WritePanels();
 }
@@ -896,44 +888,32 @@ void debugger_frame::DoStep(bool stepOver)
 {
 	if (const auto cpu = get_cpu())
 	{
-		bool should_step_over = stepOver && cpu->id_type() == 1;
-
-		if (auto _state = +cpu->state; _state & s_pause_flags && _state & cpu_flag::wait && !(_state & cpu_flag::dbg_step))
+		if (auto _state = +cpu->state; !(_state & s_pause_flags) || !(_state & cpu_flag::wait) || _state & cpu_flag::dbg_step)
 		{
-			if (should_step_over)
-			{
-				u32 current_instruction_pc = cpu->get_pc();
-
-				// Set breakpoint on next instruction
-				u32 next_instruction_pc = current_instruction_pc + 4;
-				m_breakpoint_handler->AddBreakpoint(next_instruction_pc);
-
-				// Undefine previous step over breakpoint if it hasnt been already
-				// This can happen when the user steps over a branch that doesn't return to itself
-				if (m_last_step_over_breakpoint != umax)
-				{
-					m_breakpoint_handler->RemoveBreakpoint(next_instruction_pc);
-				}
-
-				m_last_step_over_breakpoint = next_instruction_pc;
-			}
-
-			cpu->state.atomic_op([&](bs_t<cpu_flag>& state)
-			{
-				state -= s_pause_flags;
-
-				if (!should_step_over)
-				{
-					if (u32* ptr = cpu->get_pc2())
-					{
-						state += cpu_flag::dbg_step;
-						*ptr = cpu->get_pc();
-					}
-				}
-			});
-
-			cpu->state.notify_one(s_pause_flags);
+			return;
 		}
+
+		if (stepOver)
+		{
+			using bp_type = enum breakpoint_handlder::bp_type;
+
+			// Set breakpoint on next instruction
+			const u32 next_pc = cpu->get_pc() + 4;
+			g_fxo->init<breakpoint_handler>()->add(next_pc, bp_type::exec + bp_type::once, cpu->id);
+		}
+
+		cpu->state.atomic_op([&](bs_t<cpu_flag>& state)
+		{
+			state -= s_pause_flags;
+
+			if (u32* ptr = stepOver ? nullptr : cpu->get_pc2())
+			{
+				state += cpu_flag::dbg_step;
+				*ptr = cpu->get_pc();
+			}
+		});
+
+		cpu->notify();
 	}
 
 	UpdateUI();

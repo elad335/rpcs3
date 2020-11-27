@@ -19,10 +19,9 @@
 
 constexpr auto qstr = QString::fromStdString;
 
-debugger_list::debugger_list(QWidget* parent, std::shared_ptr<gui_settings> settings, breakpoint_handler* handler)
+debugger_list::debugger_list(QWidget* parent, std::shared_ptr<gui_settings> settings)
 	: QListWidget(parent)
 	, xgui_settings(settings)
-	, m_breakpoint_handler(handler)
 {
 	setWindowTitle(tr("ASM"));
 	for (uint i = 0; i < m_item_count; ++i)
@@ -47,7 +46,7 @@ void debugger_list::ShowAddress(u32 addr, bool force)
 {
 	auto IsBreakpoint = [this](u32 pc)
 	{
-		return m_cpu && m_cpu->id_type() == 1 && m_breakpoint_handler->HasBreakpoint(pc);
+		return m_cpu && m_cpu->id_type() == 1 && g_fxo->init<breakpoint_handler>()->HasBreakpoint(pc);
 	};
 
 	bool center_pc = xgui_settings->GetValue(gui::d_centerPC).toBool();

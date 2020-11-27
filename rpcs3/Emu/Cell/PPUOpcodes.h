@@ -74,6 +74,15 @@ constexpr u32 ppu_decode(u32 inst)
 
 std::array<u32, 2> op_branch_targets(u32 pc, ppu_opcode_t op);
 
+struct ppu_memory_target
+{
+	u32 addr;
+	u32 size;
+};
+
+class ppu_thread;
+ppu_memory_target op_memory_targets(const ppu_thread& ppu, ppu_opcode_t op);
+
 // PPU decoder object. D provides functions. T is function pointer type returned.
 template <typename D, typename T = decltype(&D::UNK)>
 class ppu_decoder

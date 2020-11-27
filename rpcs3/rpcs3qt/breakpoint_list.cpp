@@ -1,4 +1,4 @@
-#include "breakpoint_list.h"
+﻿#include "breakpoint_list.h"
 #include "breakpoint_handler.h"
 
 #include "Emu/CPU/CPUDisAsm.h"
@@ -9,7 +9,7 @@
 
 constexpr auto qstr = QString::fromStdString;
 
-breakpoint_list::breakpoint_list(QWidget* parent, breakpoint_handler* handler) : QListWidget(parent), m_breakpoint_handler(handler)
+breakpoint_list::breakpoint_list(QWidget* parent) : QListWidget(parent)
 {
 	setEditTriggers(QAbstractItemView::NoEditTriggers);
 	setContextMenuPolicy(Qt::CustomContextMenu);
@@ -31,18 +31,30 @@ void breakpoint_list::UpdateCPUData(cpu_thread* cpu, CPUDisAsm* disasm)
 
 void breakpoint_list::ClearBreakpoints()
 {
+	const auto cpu = this->cpu.lock();
+
 	while (count())
 	{
 		auto* currentItem = takeItem(0);
 		u32 loc = currentItem->data(Qt::UserRole).value<u32>();
-		m_breakpoint_handler->RemoveBreakpoint(loc);
+
+		if (cpu)
+		{
+			g_fxo->init<breakpoint_handler>()->remove(loc, cpu->id);
+		}
+
 		delete currentItem;
 	}
 }
 
 void breakpoint_list::RemoveBreakpoint(u32 addr)
 {
-	m_breakpoint_handler->RemoveBreakpoint(addr);
+	const auto cpu = this->cpu.lock();
+
+	if (cpu)
+	{
+		g_fxo->init<breakpoint_handler>()->remove(addr, cpu->id);
+	}
 
 	for (int i = 0; i < count(); i++)
 	{
@@ -60,7 +72,7 @@ void breakpoint_list::RemoveBreakpoint(u32 addr)
 
 void breakpoint_list::AddBreakpoint(u32 pc)
 {
-	m_breakpoint_handler->AddBreakpoint(pc);
+	g_fxo->init<breakpoint_handler>()->add(pc, bp_type::read + bp_type::write + bp_type::debug, breakpoint_handler::all_threads(m_cpu->id_type()));
 
 	m_disasm->disasm(pc);
 
@@ -84,20 +96,15 @@ void breakpoint_list::AddBreakpoint(u32 pc)
 */
 void breakpoint_list::HandleBreakpointRequest(u32 loc)
 {
-	if (!m_cpu || m_cpu->id_type() != 1 || !vm::check_addr(loc, vm::page_allocated | vm::page_executable))
+	if (!m_cpu || !m_cpu->id_type())
 	{
-		// TODO: SPU breakpoints
 		return;
 	}
 
-	if (m_breakpoint_handler->HasBreakpoint(loc))
-	{
-		RemoveBreakpoint(loc);
-	}
-	else
-	{
-		AddBreakpoint(loc);
-	}
+	const auto handler = g_fxo->init<breakpoint_handler>();
+	using bp_type = enum breakpoint_handler::bp_type;
+
+	handler->toggle(loc, cpu->id, bp_type::read + bp_type::write + bp_type::debug);
 }
 
 void breakpoint_list::OnBreakpointListDoubleClicked()

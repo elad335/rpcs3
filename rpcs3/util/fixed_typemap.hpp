@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // Backported from auto_typemap.hpp as a more simple alternative
 
