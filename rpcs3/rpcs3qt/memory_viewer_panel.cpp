@@ -244,7 +244,7 @@ memory_viewer_panel::memory_viewer_panel(QWidget* parent, u32 addr, const std::s
 	connect(sb_words, static_cast<void (QSpinBox::*)(int)>(&QSpinBox::valueChanged), [=, this]()
 	{
 		m_colcount = 1 << sb_words->value();
-		ShowMemory();
+		scroll(0);
 	});
 
 	connect(b_prev, &QAbstractButton::clicked, [this]() { scroll(-1); });
