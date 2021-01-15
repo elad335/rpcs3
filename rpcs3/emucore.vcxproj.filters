@@ -989,6 +989,9 @@
     <ClCompile Include="Emu\Io\Turntable.cpp">
       <Filter>Emu\Io</Filter>
     </ClCompile>
+    <ClCompile Include="Loader\PFD.cpp">
+      <Filter>Loader</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Crypto\aes.h">
@@ -1928,6 +1931,9 @@
       <Filter>Emu\Io</Filter>
     </ClInclude>
     <ClInclude Include="Loader\mself.hpp">
+      <Filter>Loader</Filter>
+    </ClInclude>
+    <ClInclude Include="Loader\PFD.h">
       <Filter>Loader</Filter>
     </ClInclude>
   </ItemGroup>
