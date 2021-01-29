@@ -18,6 +18,8 @@
 #include "SPURecompiler.h"
 #include "lv2/sys_sync.h"
 #include "lv2/sys_prx.h"
+#include "lv2/sys_overlay.h"
+#include "lv2/sys_process.h"
 #include "lv2/sys_memory.h"
 #include "Emu/GDB.h"
 
@@ -77,6 +79,8 @@ extern u64 get_guest_system_time();
 
 extern atomic_t<u64> g_watchdog_hold_ctr;
 
+LOG_CHANNEL(sys_log, "SYS");
+
 extern atomic_t<const char*> g_progr;
 extern atomic_t<u32> g_progr_ftotal;
 extern atomic_t<u32> g_progr_fdone;
@@ -117,8 +121,9 @@ const ppu_decoder<ppu_itype> g_ppu_itype;
 
 extern void ppu_initialize();
 extern void ppu_finalize(const ppu_module& info);
-extern void ppu_initialize(const ppu_module& info);
+extern bool ppu_initialize(const ppu_module& info);
 static void ppu_initialize2(class jit_compiler& jit, const ppu_module& module_part, const std::string& cache_path, const std::string& obj_name);
+extern std::pair<std::shared_ptr<lv2_overlay>, CellError> ppu_load_overlay(const ppu_exec_object&, const std::string& path);
 extern void ppu_unload_prx(const lv2_prx&);
 extern std::shared_ptr<lv2_prx> ppu_load_prx(const ppu_prx_object&, const std::string&);
 extern void ppu_execute_syscall(ppu_thread& ppu, u64 code);
@@ -788,7 +793,7 @@ void ppu_thread::cpu_task()
 		}
 		case ppu_cmd::initialize:
 		{
-			cmd_pop(), ppu_initialize();
+			cmd_pop(), ppu_initialize(), spu_cache::initialize();
 			break;
 		}
 		case ppu_cmd::sleep:
@@ -2064,19 +2069,37 @@ extern void ppu_finalize(const ppu_module& info)
 #endif
 }
 
-extern void ppu_precompile(std::vector<std::string>& dir_queue)
+extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<lv2_prx*>* loaded_prx)
 {
-	std::vector<std::pair<std::string, u64>> file_queue;
+	const std::string firmware_sprx_path = vfs::get("/dev_flash/sys/external/");
+
+	// Map fixed address executables area, fake overlay support
+	const bool had_ovl = !vm::map(0x3000'0000, 0x1000'0000, 0x200).operator bool();
+	const u32 ppc_seg = std::exchange(g_ps3_process_info.ppc_seg, 0x3);
+
+	enum class exec_type
+	{
+		none,
+		prx,
+		ovl,
+		//elf,
+	};
+
+	std::vector<std::tuple<std::string, exec_type, u64>> file_queue;
 	file_queue.reserve(2000);
 
-	// Initialize progress dialog
-	g_progr = "Scanning directories for SPRX libraries...";
-
 	// Find all .sprx files recursively (TODO: process .mself files)
-	for (usz i = 0; i < dir_queue.size(); i++)
+	for (usz i = 0;; i++)
 	{
+		if (i >= dir_queue.size())
+		{
+			g_progr_ftotal = file_queue.size();
+			break;
+		}
+
 		if (Emu.IsStopped())
 		{
+			file_queue.clear();
 			break;
 		}
 
@@ -2086,6 +2109,8 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue)
 		{
 			if (Emu.IsStopped())
 			{
+				i = -1;
+				file_queue.clear();
 				break;
 			}
 
@@ -2099,17 +2124,72 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue)
 				continue;
 			}
 
+			std::string upper = fmt::to_upper(entry.name);
+
 			// Check .sprx filename
-			if (fmt::to_upper(entry.name).ends_with(".SPRX"))
+			if (upper.ends_with(".SPRX"))
+			{
+				// Skip already loaded modules or HLEd ones
+				if (dir_queue[i] == firmware_sprx_path)
+				{
+					bool ignore = false;
+
+					if (loaded_prx)
+					{
+						for (auto* obj : *loaded_prx)
+						{
+							if (obj->name == entry.name)
+							{
+								ignore = true;
+								break;
+							}
+						}
+					}
+
+					if (ignore)
+					{
+						continue;
+					}
+
+					if (g_cfg.core.libraries_control.get_set().count(entry.name + ":lle"))
+					{
+						// Force LLE
+						ignore = false;
+					}
+					else if (g_cfg.core.libraries_control.get_set().count(entry.name + ":hle"))
+					{
+						// Force HLE
+						ignore = true;
+					}
+					else
+					{
+						extern const std::map<std::string_view, int> g_prx_list;
+
+						// Use list
+						ignore = g_prx_list.count(entry.name) && g_prx_list.at(entry.name) != 0;
+					}
+
+					if (ignore)
+					{
+						continue;
+					}
+				}
+
+				// Get full path
+				file_queue.emplace_back(dir_queue[i] + entry.name, exec_type::prx, 0);
+				continue;
+			}
+
+			// Check .self filename
+			if (upper.ends_with(".SELF"))
 			{
 				// Get full path
-				file_queue.emplace_back(dir_queue[i] + entry.name, 0);
-				g_progr_ftotal++;
+				file_queue.emplace_back(dir_queue[i] + entry.name, exec_type::ovl, 0);
 				continue;
 			}
 
 			// Check .mself filename
-			if (fmt::to_upper(entry.name).ends_with(".MSELF"))
+			if (upper.ends_with(".MSELF"))
 			{
 				if (fs::file mself{dir_queue[i] + entry.name})
 				{
@@ -2125,11 +2205,19 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue)
 							{
 								std::string name = rec.name;
 
-								if (fmt::to_upper(name).ends_with(".SPRX"))
+								upper = fmt::to_upper(name);
+
+								if (upper.ends_with(".SPRX"))
 								{
 									// .sprx inside .mself found
-									file_queue.emplace_back(dir_queue[i] + entry.name, rec.off);
-									g_progr_ftotal++;
+									file_queue.emplace_back(dir_queue[i] + entry.name, exec_type::prx, rec.off);
+								}
+
+								if (upper.ends_with(".SELF"))
+								{
+									// .sprx inside .mself found
+									file_queue.emplace_back(dir_queue[i] + entry.name, exec_type::ovl, rec.off);
+									continue;
 								}
 							}
 							else
@@ -2148,23 +2236,23 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue)
 
 	atomic_t<usz> fnext = 0;
 
-	shared_mutex sprx_mtx;
+	shared_mutex sprx_mtx, ovl_mtx;
 
-	named_thread_group workers("SPRX Worker ", utils::get_thread_count(), [&]
+	named_thread_group workers("SPRX Worker ", std::min<u32>(utils::get_thread_count(), ::size32(file_queue)), [&]
 	{
 		for (usz func_i = fnext++; func_i < file_queue.size(); func_i = fnext++)
 		{
-			std::string path = std::as_const(file_queue)[func_i].first;
+			auto [path, type, offset]  = std::as_const(file_queue)[func_i];
 
-			ppu_log.notice("Trying to load SPRX: %s", path);
+			ppu_log.notice("Trying to load: %s", path);
 
-			// Load MSELF or SPRX
+			// Load MSELF, SPRX or SELF
 			fs::file src{path};
 
-			if (u64 off = file_queue[func_i].second)
+			if (u64 off = offset)
 			{
 				// Adjust offset for MSELF
-				src.reset(std::make_unique<file_view>(std::move(src), off));
+				if (src) src.reset(std::make_unique<file_view>(std::move(src), off));
 
 				// Adjust path for MSELF too
 				fmt::append(path, "_x%x", off);
@@ -2173,27 +2261,80 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue)
 			// Some files may fail to decrypt due to the lack of klic
 			src = decrypt_self(std::move(src));
 
-			const ppu_prx_object obj = src;
+			elf_error err{};
 
-			if (obj == elf_error::ok)
+			switch (type)
 			{
-				std::unique_lock lock(sprx_mtx);
+			case exec_type::prx:
+			{
+				const ppu_prx_object obj = src;
 
-				if (auto prx = ppu_load_prx(obj, path))
+				if (obj == elf_error::ok)
 				{
+					std::unique_lock lock(sprx_mtx);
+
+					if (auto prx = ppu_load_prx(obj, path))
+					{
+						lock.unlock();
+						ppu_initialize(*prx);
+						idm::remove<lv2_obj, lv2_prx>(idm::last_id());
+						lock.lock();
+						ppu_unload_prx(*prx);
+						lock.unlock();
+						ppu_finalize(*prx);
+						g_progr_fdone++;
+						continue;
+					}
+				}
+
+				err = obj;
+				break;
+			}
+			case exec_type::ovl:
+			{
+				const ppu_exec_object obj = src;
+
+				err = obj;
+
+				while (err == elf_error::ok)
+				{
+					// Only one thread compiles OVL atm, other can compile PRX cuncurrently
+					std::unique_lock lock(ovl_mtx);
+
+					auto [ovlm, error] = ppu_load_overlay(obj, path);
+
+					if (error)
+					{
+						// Abort
+						err = elf_error::header_type;
+						break;
+					}
+
+					ppu_initialize(*ovlm);
+
+					for (auto& seg : ovlm->segs)
+					{
+						vm::dealloc(seg.addr);
+					}
+
 					lock.unlock();
-					ppu_initialize(*prx);
-					idm::remove<lv2_obj, lv2_prx>(idm::last_id());
-					lock.lock();
-					ppu_unload_prx(*prx);
-					lock.unlock();
-					ppu_finalize(*prx);
+					idm::remove<lv2_obj, lv2_overlay>(idm::last_id());
+					ppu_finalize(*ovlm);
 					g_progr_fdone++;
+					break;
+				}
+
+				if (err == elf_error::ok)
+				{
 					continue;
 				}
+
+				break;
+			}
+			default: break;
 			}
 
-			ppu_log.error("Failed to load SPRX '%s' (%s)", path, obj.get_error());
+			sys_log.error("Failed to load executable '%s' (%s)", path, err);
 			g_progr_fdone++;
 			continue;
 		}
@@ -2201,6 +2342,15 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue)
 
 	// Join every thread
 	workers.join();
+
+	// Revert changes
+
+	if (!had_ovl)
+	{
+		vm::unmap(0x3000'0000);
+	}
+
+	g_ps3_process_info.ppc_seg = ppc_seg;
 }
 
 extern void ppu_initialize()
@@ -2216,11 +2366,13 @@ extern void ppu_initialize()
 	{
 		return;
 	}
+	
+	bool compiled_main = false;
 
 	// Initialize main module
 	if (!_main->segs.empty())
 	{
-		ppu_initialize(*_main);
+		compiled_main = ppu_initialize(*_main);
 	}
 
 	std::vector<lv2_prx*> prx_list;
@@ -2230,17 +2382,38 @@ extern void ppu_initialize()
 		prx_list.emplace_back(&prx);
 	});
 
+	// If empty we have no indication for cache state, check everything
+	bool compile_fw = prx_list.empty();
+
 	// Initialize preloaded libraries
 	for (auto ptr : prx_list)
 	{
-		ppu_initialize(*ptr);
+		compile_fw |= ppu_initialize(*ptr);
 	}
 
-	// Initialize SPU cache
-	spu_cache::initialize();
+	const std::string firmware_sprx_path = vfs::get("/dev_flash/sys/external/");
+
+	std::vector<std::string> dir_queue;
+		
+	if (compile_fw)
+	{
+		dir_queue.emplace_back(firmware_sprx_path);
+	}
+
+	if (compiled_main)
+	{
+		dir_queue.emplace_back(vfs::get(Emu.GetDir()) + '/');
+
+		if (Emu.GetCat() == "DG" && !Emu.GetTitleID().empty())
+		{
+			dir_queue.emplace_back(vfs::get("/dev_hdd0/game/") + Emu.GetTitleID() + '/');
+		}
+	}
+
+	ppu_precompile(dir_queue, &prx_list);
 }
 
-extern void ppu_initialize(const ppu_module& info)
+bool ppu_initialize(const ppu_module& info)
 {
 	if (g_cfg.core.ppu_decoder != ppu_decoder_type::llvm)
 	{
@@ -2261,7 +2434,7 @@ extern void ppu_initialize(const ppu_module& info)
 			}
 		}
 
-		return;
+		return false;
 	}
 
 	// Link table
@@ -2374,6 +2547,8 @@ extern void ppu_initialize(const ppu_module& info)
 
 	// Sync variable to acquire workloads
 	atomic_t<u32> work_cv = 0;
+
+	bool compiled_new = false;
 
 	while (jit_mod.vars.empty() && fpos < info.funcs.size())
 	{
@@ -2590,6 +2765,9 @@ extern void ppu_initialize(const ppu_module& info)
 			continue;
 		}
 
+		// Remember, used in ppu_initialize(void)
+		compiled_new = true;
+
 		// Adjust information (is_compiled)
 		link_workload.back().second = true;
 
@@ -2651,7 +2829,7 @@ extern void ppu_initialize(const ppu_module& info)
 
 		if (Emu.IsStopped() || !get_current_cpu_thread())
 		{
-			return;
+			return compiled_new;
 		}
 
 		for (auto [obj_name, is_compiled] : link_workload)
@@ -2672,7 +2850,7 @@ extern void ppu_initialize(const ppu_module& info)
 
 	if (Emu.IsStopped() || !get_current_cpu_thread())
 	{
-		return;
+		return compiled_new;
 	}
 
 	// Jit can be null if the loop doesn't ever enter.
@@ -2742,6 +2920,8 @@ extern void ppu_initialize(const ppu_module& info)
 			}
 		}
 	}
+
+	return compiled_new;
 #else
 	fmt::throw_exception("LLVM is not available in this build.");
 #endif
