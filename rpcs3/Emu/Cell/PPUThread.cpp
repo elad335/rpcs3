@@ -2071,6 +2071,10 @@ extern void ppu_finalize(const ppu_module& info)
 
 extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<lv2_prx*>* loaded_prx)
 {
+	// Remove duplicates
+	std::sort(dir_queue.begin(), dir_queue.end());
+	dir_queue.erase(std::unique(dir_queue.begin(), dir_queue.end()), dir_queue.end());
+
 	const std::string firmware_sprx_path = vfs::get("/dev_flash/sys/external/");
 
 	// Map fixed address executables area, fake overlay support
@@ -2375,6 +2379,11 @@ extern void ppu_initialize()
 	if (!_main->segs.empty())
 	{
 		compiled_main = ppu_initialize(*_main);
+
+		if (Emu.IsStopped())
+		{
+			return;
+		}
 	}
 
 	std::vector<lv2_prx*> prx_list;
@@ -2393,12 +2402,16 @@ extern void ppu_initialize()
 		compile_fw |= ppu_initialize(*ptr);
 	}
 
-	const std::string firmware_sprx_path = vfs::get("/dev_flash/sys/external/");
+	if (Emu.IsStopped())
+	{
+		return;
+	}
 
 	std::vector<std::string> dir_queue;
-		
+
 	if (compile_fw)
 	{
+		const std::string firmware_sprx_path = vfs::get("/dev_flash/sys/external/");
 		dir_queue.emplace_back(firmware_sprx_path);
 	}
 
@@ -2406,9 +2419,9 @@ extern void ppu_initialize()
 	{
 		dir_queue.emplace_back(vfs::get(Emu.GetDir()) + '/');
 
-		if (Emu.GetCat() == "DG" && !Emu.GetTitleID().empty())
+		if (const std::string dev_bdvd = vfs::get("/dev_bdvd/PS3_GAME"); !dev_bdvd.empty())
 		{
-			dir_queue.emplace_back(vfs::get("/dev_hdd0/game/") + Emu.GetTitleID() + '/');
+			dir_queue.emplace_back(dev_bdvd + '/');
 		}
 	}
 
