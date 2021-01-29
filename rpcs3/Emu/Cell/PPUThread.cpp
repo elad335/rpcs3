@@ -2240,8 +2240,13 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<lv2_
 
 	named_thread_group workers("SPRX Worker ", std::min<u32>(utils::get_thread_count(), ::size32(file_queue)), [&]
 	{
-		for (usz func_i = fnext++; func_i < file_queue.size(); func_i = fnext++)
+		for (usz func_i = fnext++; func_i < file_queue.size(); func_i = fnext++, g_progr_fdone++)
 		{
+			if (Emu.IsStopped())
+			{
+				continue;
+			}
+
 			auto [path, type, offset]  = std::as_const(file_queue)[func_i];
 
 			ppu_log.notice("Trying to load: %s", path);
@@ -2282,7 +2287,6 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<lv2_
 						ppu_unload_prx(*prx);
 						lock.unlock();
 						ppu_finalize(*prx);
-						g_progr_fdone++;
 						continue;
 					}
 				}
@@ -2320,7 +2324,6 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<lv2_
 					lock.unlock();
 					idm::remove<lv2_obj, lv2_overlay>(idm::last_id());
 					ppu_finalize(*ovlm);
-					g_progr_fdone++;
 					break;
 				}
 
@@ -2335,7 +2338,6 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<lv2_
 			}
 
 			sys_log.error("Failed to load executable '%s' (%s)", path, err);
-			g_progr_fdone++;
 			continue;
 		}
 	});
