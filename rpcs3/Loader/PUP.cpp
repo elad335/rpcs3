@@ -46,7 +46,7 @@ fs::file pup_object::get_file(u64 entry_id)
 {
 	if (!isValid) return fs::file();
 
-	for (PUPFileEntry file_entry : m_file_tbl)
+	for (const PUPFileEntry& file_entry : m_file_tbl)
 	{
 		if (file_entry.entry_id == entry_id)
 		{
@@ -63,6 +63,8 @@ bool pup_object::validate_hashes()
 {
 	if (!isValid) return false;
 
+	std::vector<u8> buffer;
+
 	for (usz i = 0; i < m_file_tbl.size(); i++)
 	{
 		u8 *hash = m_hash_tbl[i].hash;
@@ -74,7 +76,7 @@ bool pup_object::validate_hashes()
 			return false;
 		}
 
-		std::vector<u8> buffer(file.data_length);
+		buffer.resize(file.data_length);
 		m_file.seek(file.data_offset);
 		m_file.read(buffer.data(), file.data_length);
 
