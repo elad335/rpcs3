@@ -1740,7 +1740,7 @@ bool ppu_load_exec(const ppu_exec_object& elf)
 	{
 		// Because vsh.self comes before any generic application, more memory is available to it
 		// This is an estimation though (TODO)
-		mem_size += 0x800000;
+		mem_size += 0x1800000;
 	}
 
 	g_fxo->init<lv2_memory_container>(mem_size)->used += primary_stacksize;
