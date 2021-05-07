@@ -1057,7 +1057,7 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 	}
 
 	// CLI arguments
-	m_emu_settings->EnhanceLineEdit(ui->cli_args, emu_settings_type::CommandLineArguments, true);
+	m_emu_settings->EnhanceLineEdit(ui->cli_args, emu_settings_type::CommandLineArguments);
 	SubscribeTooltip(ui->gb_cli_args, tooltips.settings.cli_args);
 
 	// HLE/LLE Libraries

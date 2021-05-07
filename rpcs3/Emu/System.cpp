@@ -1220,8 +1220,8 @@ game_boot_result Emulator::Load(const std::string& title_id, bool add_only, bool
 				sys_log.notice("Elf path: %s", argv[0]);
 
 				// Append CLI arguments from config
-				const auto& cfg_argv = g_cfg.core.cli_args.get_vec();
-				argv.insert(argv.end(), cfg_argv.begin(), cfg_argv.end());
+				const std::string cfg_argv = g_cfg.core.cli_args.to_string();
+				// TODO: populate argv
 			}
 
 			if (!argv[0].starts_with("/dev_hdd0/game"sv) && m_cat == "HG"sv)

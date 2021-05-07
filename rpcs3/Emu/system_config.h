@@ -59,7 +59,7 @@ struct cfg_root : cfg::node
 		cfg::_bool debug_console_mode{ this, "Debug Console Mode", false }; // Debug console emulation, not recommended
 		cfg::_bool hook_functions{ this, "Hook static functions" };
 		cfg::set_entry libraries_control{ this, "Libraries Control" }; // Override HLE/LLE behaviour of selected libs
-		cfg::vec_entry cli_args{ this, "CLI Arguments" }; // Command-Line-Interface arguments passed to the application
+		cfg::string cli_args{ this, "CLI Arguments" }; // Command-Line-Interface arguments passed to the application
 		cfg::_bool hle_lwmutex{ this, "HLE lwmutex" }; // Force alternative lwmutex/lwcond implementation
 		cfg::uint64 spu_llvm_lower_bound{ this, "SPU LLVM Lower Bound" };
 		cfg::uint64 spu_llvm_upper_bound{ this, "SPU LLVM Upper Bound", 0xffffffffffffffff };
