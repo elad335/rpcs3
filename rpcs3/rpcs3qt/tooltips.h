@@ -24,6 +24,7 @@ public:
 		const QString lib_default_hle              = tr("Select to LLE. (HLE by default)");
 		const QString lib_default_lle              = tr("Select to HLE. (LLE by default)");
 
+		const QString cli_args                     = tr("Set the command line arguments (argv) that will be passed to the game/application.");
 		const QString debug_console_mode           = tr("Increases the amount of usable system memory to match a DECR console and more.\nCauses some software to behave differently than on retail hardware.");
 		const QString silence_all_logs             = tr("Stop writing any logs after game startup. Don't use unless you believe it's necessary.");
 		const QString read_color                   = tr("Initializes render target memory using vm memory.");

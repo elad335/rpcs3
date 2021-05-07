@@ -1056,6 +1056,9 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 		SubscribeTooltip(ui->gb_wakeupDelay, tooltips.settings.wake_up_delay);
 	}
 
+	// CLI arguments
+	m_emu_settings->EnhanceLineEdit(ui->cli_args, emu_settings_type::CommandLineArguments, true);
+	SubscribeTooltip(ui->gb_cli_args, tooltips.settings.cli_args);
 
 	// HLE/LLE Libraries
 	const std::vector<std::string> loaded_libs = m_emu_settings->GetSettingAsVector(emu_settings_type::LibrariesControl);

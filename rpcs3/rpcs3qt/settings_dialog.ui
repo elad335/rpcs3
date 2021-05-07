@@ -9,8 +9,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>753</width>
-    <height>730</height>
+    <width>839</width>
+    <height>815</height>
    </rect>
   </property>
   <property name="sizePolicy">
@@ -39,7 +39,7 @@
       </sizepolicy>
      </property>
      <property name="currentIndex">
-      <number>9</number>
+      <number>0</number>
      </property>
      <widget class="QWidget" name="coreTab">
       <attribute name="title">
@@ -1947,6 +1947,18 @@
              <layout class="QVBoxLayout" name="gb_max_spurs_threads_layout">
               <item>
                <widget class="QComboBox" name="maxSPURSThreads"/>
+              </item>
+             </layout>
+            </widget>
+           </item>
+           <item>
+            <widget class="QGroupBox" name="gb_cli_args">
+             <property name="title">
+              <string>Command Line Arguments</string>
+             </property>
+             <layout class="QVBoxLayout" name="layout_gb_cli_args">
+              <item>
+               <widget class="QLineEdit" name="cli_args"/>
               </item>
              </layout>
             </widget>
