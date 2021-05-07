@@ -752,14 +752,15 @@ void emu_settings::EnhanceRadioButton(QButtonGroup* button_group, emu_settings_t
 	}
 }
 
-std::vector<std::string> emu_settings::GetLibrariesControl()
+std::vector<std::string> emu_settings::GetSettingAsVector(emu_settings_type type)
 {
-	return m_current_settings["Core"]["Libraries Control"].as<std::vector<std::string>, std::initializer_list<std::string>>({});
-}
+	if (const auto node = cfg_adapter::get_node(m_current_settings, settings_location[type]); node && node.IsSequence())
+	{
+		return node.as<std::vector<std::string>, std::initializer_list<std::string>>({});
+	}
 
-void emu_settings::SaveSelectedLibraries(const std::vector<std::string>& libs)
-{
-	m_current_settings["Core"]["Libraries Control"] = libs;
+	cfg_log.fatal("GetSettingAsVector(type=%d) could not retrieve the requested node", static_cast<int>(type));
+	return {};
 }
 
 QStringList emu_settings::GetSettingOptions(emu_settings_type type)
@@ -790,6 +791,11 @@ std::string emu_settings::GetSetting(emu_settings_type type) const
 }
 
 void emu_settings::SetSetting(emu_settings_type type, const std::string& val) const
+{
+	cfg_adapter::get_node(m_current_settings, settings_location[type]) = val;
+}
+
+void emu_settings::SetSetting(emu_settings_type type, const std::vector<std::string>& val) const
 {
 	cfg_adapter::get_node(m_current_settings, settings_location[type]) = val;
 }

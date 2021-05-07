@@ -128,7 +128,7 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 		}
 
 		const std::vector<std::string> selected_ls(selected.begin(), selected.end());
-		m_emu_settings->SaveSelectedLibraries(selected_ls);
+		m_emu_settings->SetSetting(emu_settings_type::LibrariesControl, selected_ls);
 		m_emu_settings->SaveSettings();
 
 		if (do_exit)
@@ -1056,9 +1056,10 @@ settings_dialog::settings_dialog(std::shared_ptr<gui_settings> gui_settings, std
 		SubscribeTooltip(ui->gb_wakeupDelay, tooltips.settings.wake_up_delay);
 	}
 
-	std::vector<std::string> loadedLibs = m_emu_settings->GetLibrariesControl();
 
-	std::set<std::string_view> set(loadedLibs.begin(), loadedLibs.end());
+	// HLE/LLE Libraries
+	const std::vector<std::string> loaded_libs = m_emu_settings->GetSettingAsVector(emu_settings_type::LibrariesControl);
+	std::set<std::string_view> set(loaded_libs.begin(), loaded_libs.end());
 
 	for (const auto& lib : g_prx_list)
 	{

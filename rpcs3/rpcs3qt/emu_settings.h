@@ -59,8 +59,7 @@ public:
 	/** Connects a button group with the target settings type*/
 	void EnhanceRadioButton(QButtonGroup* button_group, emu_settings_type type);
 
-	std::vector<std::string> GetLibrariesControl();
-	void SaveSelectedLibraries(const std::vector<std::string>& libs);
+	std::vector<std::string> GetSettingAsVector(emu_settings_type type);
 
 	/** Returns the valid options for a given setting.*/
 	static QStringList GetSettingOptions(emu_settings_type type);
@@ -73,6 +72,7 @@ public:
 
 	/** Sets the setting type to a given value.*/
 	void SetSetting(emu_settings_type type, const std::string& val) const;
+	void SetSetting(emu_settings_type type, const std::vector<std::string>& val) const;
 
 	/** Gets all the renderer info for gpu settings.*/
 	render_creator* m_render_creator = nullptr;
