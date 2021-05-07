@@ -680,7 +680,7 @@ void emu_settings::EnhanceDoubleSpinBox(QDoubleSpinBox* spinbox, emu_settings_ty
 	});
 }
 
-void emu_settings::EnhanceLineEdit(QLineEdit* edit, emu_settings_type type)
+void emu_settings::EnhanceLineEdit(QLineEdit* edit, emu_settings_type type, bool as_vector)
 {
 	if (!edit)
 	{
@@ -688,13 +688,37 @@ void emu_settings::EnhanceLineEdit(QLineEdit* edit, emu_settings_type type)
 		return;
 	}
 
-	const std::string set_text = GetSetting(type);
-	edit->setText(qstr(set_text));
-
-	connect(edit, &QLineEdit::textChanged, [type, this](const QString &text)
+	if (as_vector)
 	{
-		SetSetting(type, sstr(text));
-	});
+		std::string text;
+		for (const std::string& elem : GetSettingAsVector(emu_settings_type::CommandLineArguments))
+		{
+			if (!text.empty())
+				text += " ";
+			text += elem;
+		}
+		edit->setText(qstr(text));
+
+		connect(edit, &QLineEdit::textChanged, [type, this](const QString& text)
+		{
+			std::vector<std::string> vec;
+			for (const QString& elem : text.split(" "))
+			{
+				vec.emplace_back(sstr(elem));
+			}
+			SetSetting(type, vec);
+		});
+	}
+	else
+	{
+		const std::string set_text = GetSetting(type);
+		edit->setText(qstr(set_text));
+
+		connect(edit, &QLineEdit::textChanged, [type, this](const QString& text)
+		{
+			SetSetting(type, sstr(text));
+		});
+	}
 }
 
 void emu_settings::EnhanceRadioButton(QButtonGroup* button_group, emu_settings_type type)
