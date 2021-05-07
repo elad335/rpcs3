@@ -54,7 +54,7 @@ public:
 	void EnhanceDoubleSpinBox(QDoubleSpinBox* spinbox, emu_settings_type type, const QString& prefix = "", const QString& suffix = "");
 
 	/** Connects a line edit with the target settings type*/
-	void EnhanceLineEdit(QLineEdit* edit, emu_settings_type type, bool as_vector = false);
+	void EnhanceLineEdit(QLineEdit* edit, emu_settings_type type, bool as_vector = false, const QRegularExpression& split_regex = QRegularExpression(""));
 
 	/** Connects a button group with the target settings type*/
 	void EnhanceRadioButton(QButtonGroup* button_group, emu_settings_type type);

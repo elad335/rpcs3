@@ -680,7 +680,7 @@ void emu_settings::EnhanceDoubleSpinBox(QDoubleSpinBox* spinbox, emu_settings_ty
 	});
 }
 
-void emu_settings::EnhanceLineEdit(QLineEdit* edit, emu_settings_type type, bool as_vector)
+void emu_settings::EnhanceLineEdit(QLineEdit* edit, emu_settings_type type, bool as_vector, const QRegularExpression& split_regex)
 {
 	if (!edit)
 	{
@@ -699,10 +699,10 @@ void emu_settings::EnhanceLineEdit(QLineEdit* edit, emu_settings_type type, bool
 		}
 		edit->setText(qstr(text));
 
-		connect(edit, &QLineEdit::textChanged, [type, this](const QString& text)
+		connect(edit, &QLineEdit::textChanged, [type, split_regex, this](const QString& text)
 		{
 			std::vector<std::string> vec;
-			for (const QString& elem : text.split(" "))
+			for (const QString& elem : text.split(split_regex))
 			{
 				vec.emplace_back(sstr(elem));
 			}
