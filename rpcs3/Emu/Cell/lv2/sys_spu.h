@@ -114,6 +114,8 @@ struct sys_spu_thread_argument
 
 struct sys_spu_segment
 {
+	using enable_bitcopy = std::true_type;
+
 	be_t<s32> type; // copy, fill, info
 	be_t<u32> ls; // local storage address
 	be_t<u32> size;
@@ -283,8 +285,8 @@ struct lv2_spu_group
 	atomic_t<spu_group_status> run_state; // SPU Thread Group State
 	atomic_t<s32> exit_status; // SPU Thread Group Exit Status
 	atomic_t<u32> join_state; // flags used to detect exit cause and signal
-	atomic_t<u32> running; // Number of running threads
-	atomic_t<u64> stop_count;
+	atomic_t<u32> running = 0; // Number of running threads
+	atomic_t<u64> stop_count = 0;
 	class ppu_thread* waiter = nullptr;
 	bool set_terminate = false;
 
@@ -297,7 +299,7 @@ struct lv2_spu_group
 	std::shared_ptr<lv2_event_queue> ep_exception; // TODO: SYS_SPU_THREAD_GROUP_EVENT_EXCEPTION
 	std::shared_ptr<lv2_event_queue> ep_sysmodule; // TODO: SYS_SPU_THREAD_GROUP_EVENT_SYSTEM_MODULE
 
-	lv2_spu_group(std::string name, u32 num, s32 prio, s32 type, lv2_memory_container* ct, bool uses_scheduler, u32 mem_size)
+	lv2_spu_group(std::string name, u32 num, s32 prio, s32 type, lv2_memory_container* ct, bool uses_scheduler, u32 mem_size) noexcept
 		: name(std::move(name))
 		, id(idm::last_id())
 		, max_num(num)
@@ -311,12 +313,13 @@ struct lv2_spu_group
 		, run_state(SPU_THREAD_GROUP_STATUS_NOT_INITIALIZED)
 		, exit_status(0)
 		, join_state(0)
-		, running(0)
-		, stop_count(0)
 		// TODO: args()
 	{
 		threads_map.fill(-1);
 	}
+
+	lv2_spu_group(utils::serial& ar) noexcept;
+	void save(utils::serial& ar);
 
 	CellError send_run_event(u64 data1, u64 data2, u64 data3) const
 	{

@@ -62,7 +62,7 @@ void fmt_class_string<CellGemStatus>::format(std::string& out, u64 arg)
 
 struct gem_config
 {
-	atomic_t<u32> state = 0;
+	atomic_t<u8> state = 0;
 
 	struct gem_color
 	{
@@ -90,6 +90,8 @@ struct gem_config
 		u8 rumble = 0;                                     // Rumble intensity
 		gem_color sphere_rgb = {};                         // RGB color of the sphere LED
 		u32 hue = 0;                                       // Tracking hue of the motion controller
+
+		using enable_bitcopy = std::true_type;
 	};
 
 	CellGemAttribute attribute = {};
@@ -106,7 +108,7 @@ struct gem_config
 
 	shared_mutex mtx;
 
-	Timer timer;
+	u64 start_timestamp = 0;
 
 	// helper functions
 	bool is_controller_ready(u32 gem_num) const
@@ -136,7 +138,43 @@ struct gem_config
 			controllers[gem_num].port = 7u - gem_num;
 		}
 	}
+
+	gem_config() = default;
+
+	void serialize_common(utils::serial& ar)
+	{
+		ar(state);
+
+		if (!state)
+		{
+			return;
+		}
+
+		if (ar.is_writing())
+		{
+			USING_SERIALIZATION_VERSION(cellGem);
+		}
+
+		ar(attribute, vc_attribute, status_flags, enable_pitch_correction, inertial_counter, controllers
+			, connected_controllers, update_started, camera_frame, memory_ptr, start_timestamp);
+	}
+
+	gem_config(utils::serial& ar)
+	{
+		serialize_common(ar);
+	}
+
+	void save(utils::serial& ar)
+	{
+		serialize_common(ar);
+	}
 };
+
+template <>
+void fxo_serialize<gem_config>(utils::serial* ar)
+{
+	fxo_serialize_body<gem_config>(ar);
+}
 
 /**
  * \brief Verifies that a Move controller id is valid
@@ -738,7 +776,7 @@ error_code cellGemGetInertialState(u32 gem_num, u32 state_flag, u64 timestamp, v
 	{
 		ds3_input_to_ext(gem_num, inertial_state->ext);
 
-		inertial_state->timestamp = gem.timer.GetElapsedTimeInMicroSec();
+		inertial_state->timestamp = (get_guest_system_time() - gem.start_timestamp);
 		inertial_state->counter = gem.inertial_counter++;
 		inertial_state->accelerometer[0] = 10;
 	}
@@ -876,7 +914,7 @@ error_code cellGemGetState(u32 gem_num, u32 flag, u64 time_parameter, vm::ptr<Ce
 		ds3_input_to_ext(gem_num, gem_state->ext);
 
 		gem_state->tracking_flags = CELL_GEM_TRACKING_FLAG_POSITION_TRACKED | CELL_GEM_TRACKING_FLAG_VISIBLE;
-		gem_state->timestamp = gem.timer.GetElapsedTimeInMicroSec();
+		gem_state->timestamp = (get_guest_system_time() - gem.start_timestamp);
 		gem_state->quat[3] = 1.f;
 
 		return CELL_OK;
@@ -1006,7 +1044,7 @@ error_code cellGemInit(ppu_thread& ppu, vm::cptr<CellGemAttribute> attribute)
 	}
 
 	// TODO: is this correct?
-	gem.timer.Start();
+	gem.start_timestamp = get_guest_system_time();
 
 	return CELL_OK;
 }
@@ -1153,7 +1191,7 @@ error_code cellGemReset(u32 gem_num)
 	gem.reset_controller(gem_num);
 
 	// TODO: is this correct?
-	gem.timer.Start();
+	gem.start_timestamp = get_guest_system_time();
 
 	return CELL_OK;
 }

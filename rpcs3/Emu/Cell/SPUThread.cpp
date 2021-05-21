@@ -27,11 +27,13 @@
 #include <cfenv>
 #include <thread>
 #include <shared_mutex>
+#include <span>
 #include "util/vm.hpp"
 #include "util/asm.hpp"
 #include "util/v128.hpp"
 #include "util/v128sse.hpp"
 #include "util/sysinfo.hpp"
+#include "util/serialization.hpp"
 
 using spu_rdata_t = decltype(spu_thread::rdata);
 
@@ -1710,6 +1712,7 @@ spu_thread::spu_thread(lv2_spu_group* group, u32 index, std::string_view name, u
 	: cpu_thread(idm::last_id())
 	, group(group)
 	, index(index)
+	, thread_type(group ? spu_type::threaded : is_isolated ? spu_type::isolated : spu_type::raw)
 	, shm(std::make_shared<utils::shm>(SPU_LS_SIZE))
 	, ls([&]()
 	{
@@ -1762,7 +1765,6 @@ spu_thread::spu_thread(lv2_spu_group* group, u32 index, std::string_view name, u
 
 		fmt::throw_exception("Failed to map SPU LS memory");
 	}())
-	, thread_type(group ? spu_type::threaded : is_isolated ? spu_type::isolated : spu_type::raw)
 	, option(option)
 	, lv2_id(lv2_id)
 	, spu_tname(make_single<std::string>(name))
@@ -1792,6 +1794,201 @@ spu_thread::spu_thread(lv2_spu_group* group, u32 index, std::string_view name, u
 	}
 
 	range_lock = vm::alloc_range_lock();
+}
+
+void spu_thread::serialize_common(utils::serial& ar)
+{
+	for (v128& reg : gpr)
+		ar(reg._bytes);
+	
+	ar(pc, ch_mfc_cmd, mfc_size, mfc_barrier, mfc_fence, mfc_prxy_cmd, mfc_prxy_mask, mfc_prxy_write_state.all
+	, srr0
+	, ch_tag_upd
+	, ch_tag_mask
+	, ch_tag_stat.data
+	, ch_stall_mask
+	, ch_stall_stat.data
+	, ch_atomic_stat.data
+	, ch_out_mbox.data
+	, ch_out_intr_mbox.data
+	, snr_config
+
+	, ch_snr1.data
+	, ch_snr2.data
+	, ch_events.raw().all
+	, interrupts_enabled
+	, run_ctrl
+	, exit_status.data
+	, status_npc.raw().status);
+
+	std::for_each_n(mfc_queue, mfc_size, [&](spu_mfc_cmd& cmd) { ar(cmd); });
+}
+
+spu_thread::spu_thread(utils::serial& ar, lv2_spu_group* group)
+	: cpu_thread(idm::last_id())
+	, group(group)
+	, index(ar)
+	, thread_type(group ? spu_type::threaded : ar.operator u8() ? spu_type::isolated : spu_type::raw)
+	, shm(ensure(vm::get(vm::spu)->peek(vm_offset()).second))
+	, ls([&]()
+	{
+		if (g_cfg.core.mfc_debug)
+		{
+			utils::memory_commit(vm::g_stat_addr + vm_offset(), SPU_LS_SIZE);
+		}
+
+		// Try to guess free area
+		const auto start = vm::g_free_addr + SPU_LS_SIZE * (cpu_thread::id & 0xffffff) * 12;
+
+		u32 total = 0;
+
+		// Map LS and its mirrors
+		for (u64 addr = reinterpret_cast<u64>(start); addr < 0x8000'0000'0000;)
+		{
+			if (auto ptr = shm->try_map(reinterpret_cast<u8*>(addr)))
+			{
+				if (++total == 3)
+				{
+					// Use the middle mirror
+					return ptr - SPU_LS_SIZE;
+				}
+
+				addr += SPU_LS_SIZE;
+			}
+			else
+			{
+				// Reset, cleanup and start again
+				for (u32 i = 1; i <= total; i++)
+				{
+					shm->unmap(reinterpret_cast<u8*>(addr - i * SPU_LS_SIZE));
+				}
+
+				total = 0;
+
+				addr += 0x10000;
+			}
+		}
+
+		fmt::throw_exception("Failed to map SPU LS memory");
+	}())
+	, option(ar)
+	, lv2_id(ar)
+	, spu_tname(make_single<std::string>(ar.operator std::string()))
+{
+	if (g_cfg.core.spu_decoder == spu_decoder_type::asmjit)
+	{
+		jit = spu_recompiler_base::make_asmjit_recompiler();
+	}
+
+	if (g_cfg.core.spu_decoder == spu_decoder_type::llvm)
+	{
+		jit = spu_recompiler_base::make_fast_llvm_recompiler();
+	}
+
+	if (g_cfg.core.spu_decoder != spu_decoder_type::fast && g_cfg.core.spu_decoder != spu_decoder_type::precise)
+	{
+		if (g_cfg.core.spu_block_size != spu_block_size_type::safe)
+		{
+			// Initialize stack mirror
+			std::memset(stack_mirror.data(), 0xff, sizeof(stack_mirror));
+		}
+	}
+
+	if (get_type() >= spu_type::raw)
+	{
+		cpu_init();
+	}
+
+	range_lock = vm::alloc_range_lock();
+
+	serialize_common(ar);
+
+	{
+		u32 vals[4]{};
+		const u8 count = ar;
+		ar(std::span(vals, count));
+		ch_in_mbox.set_values(count, vals[0], vals[1], vals[2], vals[3]);
+	}
+
+	status_npc.raw().npc = pc | u8{interrupts_enabled};
+
+	if (get_type() == spu_type::threaded)
+	{
+		for (auto& pair : spuq)
+		{
+			ar(pair.first);
+			pair.second = idm::get_unlocked<lv2_obj, lv2_event_queue>(ar.operator u32());
+		}
+
+		for (auto& q : spup)
+		{
+			q = idm::get_unlocked<lv2_obj, lv2_event_queue>(ar.operator u32());
+		}
+	}
+	else
+	{
+		for (spu_int_ctrl_t& ctrl : int_ctrl)
+		{
+			ar(ctrl.mask, ctrl.stat);
+			ctrl.tag = idm::get_unlocked<lv2_obj, lv2_int_tag>(ar.operator u32());
+		}
+
+		g_raw_spu_ctr++;
+		g_raw_spu_id[index] = id;
+	}
+
+	if (ar.operator u8()) stop_flag_removal_protection = true;
+}
+
+void spu_thread::save(utils::serial& ar)
+{
+	USING_SERIALIZATION_VERSION(spu);
+
+	if (raddr)
+	{
+		// Lose reservation at savestate load with an event if one existed at savestate save
+		set_events(SPU_EVENT_LR);
+	}
+
+	ar(index);
+
+	if (get_type() != spu_type::threaded)
+	{
+		ar(u8{get_type() == spu_type::isolated});
+	}
+
+	ar(option, lv2_id, *spu_tname.load());
+
+	serialize_common(ar);
+
+	{
+		u32 vals[4]{};
+		const u8 count = ch_in_mbox.try_read(vals);
+		ar(count, std::span(vals, count));
+	}
+
+	if (get_type() == spu_type::threaded)
+	{
+		for (const auto& [key, q] : spuq)
+		{
+			ar(key);
+			ar(lv2_obj::check(q) ? q->id : 0);
+		}
+
+		for (auto& p : spup)
+		{
+			ar(lv2_obj::check(p) ? p->id : 0);
+		}
+	}
+	else
+	{
+		for (const spu_int_ctrl_t& ctrl : int_ctrl)
+		{
+			ar(ctrl.mask, ctrl.stat, lv2_obj::check(ctrl.tag) ? ctrl.tag->id : 0);
+		}
+	}
+
+	ar(u8{!!(state & cpu_flag::stop)});
 }
 
 void spu_thread::push_snr(u32 number, u32 value)
@@ -2754,7 +2951,7 @@ bool spu_thread::do_putllc(const spu_mfc_cmd& args)
 
 				if (count2 > 20000 && g_cfg.core.perf_report) [[unlikely]]
 				{
-					perf_log.warning(u8"PUTLLC: took too long: %.3fµs (%u c) (addr=0x%x) (S)", count2 / (utils::get_tsc_freq() / 1000'000.), count2, addr);
+					perf_log.warning(u8"PUTLLC: took too long: %.3fÂµs (%u c) (addr=0x%x) (S)", count2 / (utils::get_tsc_freq() / 1000'000.), count2, addr);
 				}
 
 				if (ok)
@@ -2789,7 +2986,7 @@ bool spu_thread::do_putllc(const spu_mfc_cmd& args)
 			{
 				if (count > 20000 && g_cfg.core.perf_report) [[unlikely]]
 				{
-					perf_log.warning(u8"PUTLLC: took too long: %.3fµs (%u c) (addr = 0x%x)", count / (utils::get_tsc_freq() / 1000'000.), count, addr);
+					perf_log.warning(u8"PUTLLC: took too long: %.3fÂµs (%u c) (addr = 0x%x)", count / (utils::get_tsc_freq() / 1000'000.), count, addr);
 				}
 
 				break;
@@ -2906,7 +3103,7 @@ void do_cell_atomic_128_store(u32 addr, const void* to_write)
 
 		if (result > 20000 && g_cfg.core.perf_report) [[unlikely]]
 		{
-			perf_log.warning(u8"STORE128: took too long: %.3fµs (%u c) (addr=0x%x)", result / (utils::get_tsc_freq() / 1000'000.), result, addr);
+			perf_log.warning(u8"STORE128: took too long: %.3fÂµs (%u c) (addr=0x%x)", result / (utils::get_tsc_freq() / 1000'000.), result, addr);
 		}
 
 		static_cast<void>(cpu->test_stopped());
@@ -4432,6 +4629,8 @@ bool spu_thread::stop_and_signal(u32 code)
 		{
 			if (is_stopped(old))
 			{
+				ch_out_mbox.set_value(spuq);
+
 				// The thread group cannot be stopped while waiting for an event
 				ensure(!(old & cpu_flag::stop));
 				return false;

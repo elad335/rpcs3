@@ -1,4 +1,4 @@
-// Qt5.10+ frontend implementation for rpcs3. Known to work on Windows, Linux, Mac
+﻿// Qt5.10+ frontend implementation for rpcs3. Known to work on Windows, Linux, Mac
 // by Sacha Refshauge, Megamouse and flash-fire
 
 #include <iostream>
@@ -180,6 +180,10 @@ LOG_CHANNEL(q_debug, "QDEBUG");
 	std::abort();
 }
 
+void print_debug(const char* fff)
+{
+ OutputDebugStringA(fff);
+}
 struct fatal_error_listener final : logs::listener
 {
 	~fatal_error_listener() override = default;
@@ -240,6 +244,7 @@ constexpr auto arg_updating   = "updating";
 constexpr auto arg_user_id    = "user-id";
 constexpr auto arg_installfw  = "installfw";
 constexpr auto arg_installpkg = "installpkg";
+constexpr auto arg_savestate  = "savestate";
 constexpr auto arg_commit_db  = "get-commit-db";
 
 int find_arg(std::string arg, int& argc, char* argv[])
@@ -530,6 +535,8 @@ int main(int argc, char** argv)
 	parser.addOption(installpkg_option);
 	const QCommandLineOption user_id_option(arg_user_id, "Start RPCS3 as this user.", "user id", "");
 	parser.addOption(user_id_option);
+	const QCommandLineOption savestate_option(arg_savestate, "Path for directly loading a savestate.", "path", "");
+	parser.addOption(savestate_option);
 	parser.addOption(QCommandLineOption(arg_q_debug, "Log qDebug to RPCS3.log."));
 	parser.addOption(QCommandLineOption(arg_error, "For internal usage."));
 	parser.addOption(QCommandLineOption(arg_updating, "For internal usage."));
@@ -877,6 +884,31 @@ int main(int argc, char** argv)
 			}
 		});
 	}
+	else if (parser.isSet(arg_savestate))
+	{
+		const std::string savestate_path = parser.value(savestate_option).toStdString();
+
+		if (!fs::is_file(savestate_path))
+		{
+			report_fatal_error(fmt::format("No savestate file found: %s", savestate_path));
+		}
+
+		Emu.CallAfter([path = savestate_path]()
+		{
+			Emu.SetForceBoot(true);
+
+			if (const game_boot_result error = Emu.BootGameInState(path); error != game_boot_result::no_errors)
+			{
+				sys_log.error("Booting savestate '%s' failed: reason: %s", path, error);
+
+				if (s_headless || s_no_gui)
+				{
+					report_fatal_error(fmt::format("Booting savestate '%s' failed!\n\nReason: %s", path, error));
+				}
+			}
+		});
+	}
+
 
 	// run event loop (maybe only needed for the gui application)
 	return app->exec();

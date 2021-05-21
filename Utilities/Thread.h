@@ -5,6 +5,7 @@
 #include "util/shared_ptr.hpp"
 
 #include <string>
+#include <concepts>
 
 #include "mutex.h"
 #include "lockless.h"
@@ -633,6 +634,13 @@ public:
 		}
 
 		return *this;
+	}
+
+	// Destructor-like abort, but preserving the context for external access
+	void notify_and_join()
+	{
+		operator=(thread_state::aborting);
+		thread::join();
 	}
 
 	// Context type doesn't need virtual destructor

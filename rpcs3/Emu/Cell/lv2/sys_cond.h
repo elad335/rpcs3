@@ -38,6 +38,10 @@ struct lv2_cond final : lv2_obj
 	{
 	}
 
+	lv2_cond(utils::serial& ar);
+	static std::shared_ptr<void> load(utils::serial& ar);
+	void save(utils::serial& ar);
+
 	CellError on_id_create()
 	{
 		if (mutex->exists)

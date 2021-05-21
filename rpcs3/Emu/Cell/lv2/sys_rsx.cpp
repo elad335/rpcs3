@@ -1,4 +1,4 @@
-#include "stdafx.h"
+﻿#include "stdafx.h"
 #include "sys_rsx.h"
 
 #include "Emu/Cell/PPUModule.h"
@@ -74,10 +74,18 @@ void rsx::thread::send_event(u64 data1, u64 event_flags, u64 data3) const
 		error = sys_event_port_send(rsx_event_port, data1, event_flags, data3);
 	}
 
-	if (error && error + 0u != CELL_ENOTCONN)
+	if (!Emu.IsPaused() && error && error + 0u != CELL_ENOTCONN)
 	{
 		fmt::throw_exception("rsx::thread::send_event() Failed to send event! (error=%x)", +error);
 	}
+}
+
+void signal_gcm_intr_thread_offline(u32 queue_id)
+{
+	const auto render = rsx::get_current_renderer();
+	if (!render->driver_info || vm::_ref<RsxDriverInfo>(render->driver_info).handler_queue != queue_id) return;
+
+	std::lock_guard{render->sys_rsx_mtx}, render->gcm_intr_thread_offline = true;
 }
 
 error_code sys_rsx_device_open(cpu_thread& cpu)
@@ -479,7 +487,16 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 			}
 		}
 
-		render->request_emu_flip(flip_idx);
+		if (!render->request_emu_flip(flip_idx))
+		{
+			if (auto cpu = get_current_cpu_thread<ppu_thread>())
+			{
+				cpu->state += cpu_flag::exit;
+				cpu->incomplete_syscall_flag = true;
+			}
+
+			return {};
+		}
 	}
 	break;
 
@@ -734,6 +751,10 @@ error_code sys_rsx_context_attribute(u32 context_id, u32 package_id, u64 a3, u64
 	{
 		// NOTE: There currently seem to only be 2 active heads on PS3
 		ensure(a3 < 2);
+
+		reader_lock lock(render->sys_rsx_mtx);
+
+		if (render->gcm_intr_thread_offline) break;
 
 		// todo: this is wrong and should be 'second' vblank handler and freq, but since currently everything is reported as being 59.94, this should be fine
 		vm::_ref<u32>(render->device_addr + 0x30) = 1;
