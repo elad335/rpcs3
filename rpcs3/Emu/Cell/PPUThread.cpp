@@ -1175,7 +1175,7 @@ void ppu_thread::cmd_pop(u32 count)
 	const u32 pos = cmd_queue.peek();
 
 	// Clean command buffer for command tail
-	for (u32 i = 1; i <= count; i++)
+	for (u32 i = 0; i <= count; i++)
 	{
 		cmd_queue[pos + i].raw() = cmd64{};
 	}
