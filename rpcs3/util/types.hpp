@@ -1027,7 +1027,7 @@ concept PtrCastable = requires(const volatile X* x, const volatile Y* y)
 };
 
 template <typename X, typename Y> requires PtrCastable<X, Y>
-constexpr bool is_same_ptr()
+consteval bool is_same_ptr()
 {
 	if constexpr (std::is_void_v<X> || std::is_void_v<Y> || std::is_same_v<std::remove_cv_t<X>, std::remove_cv_t<Y>>)
 	{
@@ -1039,7 +1039,7 @@ constexpr bool is_same_ptr()
 	}
 	else
 	{
-		if (std::is_constant_evaluated())
+#if __cpp_constexpr_dynamic_alloc >= 201907
 		{
 			bool result = false;
 
@@ -1060,12 +1060,9 @@ constexpr bool is_same_ptr()
 
 			return result;
 		}
-		else
-		{
-			std::aligned_union_t<0, X, Y> s;
-			Y* ptr = reinterpret_cast<Y*>(&s);
-			return static_cast<X*>(ptr) == static_cast<void*>(ptr);
-		}
+#else
+		return true;
+#endif
 	}
 }
 
