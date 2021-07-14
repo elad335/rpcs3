@@ -2109,43 +2109,43 @@ void Emulator::Stop(bool savestate, bool restart)
 	m_stop_ctr++;
 	m_stop_ctr.notify_all();
 
-	if (restart)
+	if (savestate)
 	{
-		if (savestate)
+		const std::string path = fs::get_cache_dir() + "/savestates/" + (m_title_id.empty() ? m_path.substr(m_path.find_last_of(fs::delim) + 1) : m_title_id) + ".SAVESTAT";
+
+		fs::pending_file file(path);
+
+		// Identifer -> version
+		std::vector<std::pair<u16, u16>> used_serial;
+		used_serial.reserve(s_serial_versions.size());
+
+		for (const serial_ver_t& ver : s_serial_versions)
 		{
-			const std::string path = fs::get_cache_dir() + "/savestates/" + (m_title_id.empty() ? m_path.substr(m_path.find_last_of(fs::delim) + 1) : m_title_id) + ".SAVESTAT";
-
-			fs::pending_file file(path);
-
-			// Identifer -> version
-			std::vector<std::pair<u16, u16>> used_serial;
-			used_serial.reserve(s_serial_versions.size());
-
-			for (const serial_ver_t& ver : s_serial_versions)
+			if (ver.used)
 			{
-				if (ver.used)
-				{
-					used_serial.emplace_back(&ver - s_serial_versions.data(), *ver.compatible_versions.rbegin());
-				}
+				used_serial.emplace_back(&ver - s_serial_versions.data(), *ver.compatible_versions.rbegin());
 			}
-
-			auto& ar = *this->ar;
-			const usz pos = ar.data.size();
-			std::memcpy(&ar.data[10], &pos, 8);// Set offset
-			ar(used_serial);
-
-			if (!file.file || (file.file.write(ar.data), !file.commit()))
-			{
-				sys_log.error("Failed to write savestate to file! (path='%s', %s)", path, fs::g_tls_error);
-			}
-			else
-			{
-				sys_log.success("Saved savestate! path='%s'", path);
-			}
-
-			ar.pos = 0;
 		}
 
+		auto& ar = *this->ar;
+		const usz pos = ar.data.size();
+		std::memcpy(&ar.data[10], &pos, 8);// Set offset
+		ar(used_serial);
+
+		if (!file.file || (file.file.write(ar.data), !file.commit()))
+		{
+			sys_log.error("Failed to write savestate to file! (path='%s', %s)", path, fs::g_tls_error);
+		}
+		else
+		{
+			sys_log.success("Saved savestate! path='%s'", path);
+		}
+
+		ar.pos = 0;
+	}
+
+	if (restart)
+	{
 		// Reload with prior configs.
 		if (const auto error = Load(m_title_id, false, m_force_global_config); error != game_boot_result::no_errors)
 			sys_log.error("Restart failed: %s", error);
