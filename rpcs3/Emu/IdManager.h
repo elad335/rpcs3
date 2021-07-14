@@ -327,6 +327,8 @@ class idm
 
 public:
 
+	static constexpr std::false_type unlocked{};
+
 	// Remove all objects of a type
 	template <typename T>
 	static inline void clear()

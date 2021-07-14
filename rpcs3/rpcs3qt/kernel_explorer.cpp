@@ -5,6 +5,7 @@
 #include <QHeaderView>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
+#include <optional>
 
 #include "Emu/IdManager.h"
 #include "Emu/Cell/PPUThread.h"
@@ -307,6 +308,8 @@ void kernel_explorer::update()
 		clean_up_tree(root);
 	}
 
+	std::optional<std::scoped_lock<shared_mutex, shared_mutex>> lock_idm_lv2(std::in_place, id_manager::g_mutex, lv2_obj::g_mutex);
+
 	const u32 total_memory_usage = dct->used;
 
 	root->setText(0, qstr(fmt::format("Process 0x%08x: Total Memory Usage: 0x%x/0x%x (%0.2f/%0.2f MB)", process_getpid(), total_memory_usage, dct->size, 1. * total_memory_usage / (1024 * 1024)
@@ -536,27 +539,25 @@ void kernel_explorer::update()
 			add_leaf(node, qstr(fmt::format("Unknown object 0x%08x", id)));
 		}
 		}
-	});
+	}, idm::unlocked);
 
 	idm::select<sys_vm_t>([&](u32 /*id*/, sys_vm_t& vmo)
 	{
 		const u32 psize = vmo.psize;
 		add_leaf(find_node(root, additional_nodes::virtual_memory), qstr(fmt::format("Virtual Mem 0x%08x: Virtual Size: 0x%x (%0.2f MB), Physical Size: 0x%x (%0.2f MB), Mem Container: %s", vmo.addr
 			, vmo.size, vmo.size * 1. / (1024 * 1024), psize, psize * 1. / (1024 * 1024))), vmo.ct->id);
-	});
+	}, idm::unlocked);
 
 	idm::select<lv2_socket>([&](u32 id, lv2_socket& sock)
 	{
 		add_leaf(find_node(root, additional_nodes::sockets), qstr(fmt::format("Socket %u: Type: %s, Family: %s, Wq: %zu", id, sock.type, sock.family, sock.queue.size())));
-	});
+	}, idm::unlocked);
 
 	idm::select<lv2_memory_container>([&](u32 id, lv2_memory_container& container)
 	{
 		const u32 used = container.used;
 		add_leaf(find_node(root, additional_nodes::memory_containers), qstr(fmt::format("Memory Container 0x%08x: Used: 0x%x/0x%x (%0.2f/%0.2f MB)", id, used, container.size, used * 1. / (1024 * 1024), container.size * 1. / (1024 * 1024))));
-	});
-
-	std::unique_lock lock_lv2(lv2_obj::g_mutex);
+	}, idm::unlocked);
 
 	idm::select<named_thread<ppu_thread>>([&](u32 id, ppu_thread& ppu)
 	{
@@ -565,9 +566,7 @@ void kernel_explorer::update()
 
 		add_leaf(find_node(root, additional_nodes::ppu_threads), qstr(fmt::format(u8"PPU 0x%07x: “%s”, PRIO: %d, Joiner: %s, Status: %s, State: %s, %s func: “%s”", id, *ppu.ppu_tname.load(), +ppu.prio, ppu.joiner.load(), status, ppu.state.load()
 			, ppu.current_function ? "In" : "Last", func ? func : "")));
-	});
-
-	lock_lv2.unlock();
+	}, idm::unlocked);
 
 	idm::select<named_thread<spu_thread>>([&](u32 /*id*/, spu_thread& spu)
 	{
@@ -623,7 +622,7 @@ void kernel_explorer::update()
 				}
 			}
 		}
-	});
+	}, idm::unlocked);
 
 	idm::select<lv2_spu_group>([&](u32 id, lv2_spu_group& tg)
 	{
@@ -713,7 +712,7 @@ void kernel_explorer::update()
 				// TODO: Might be old CellSpurs structure which is smaller
 			}
 		}
-	});
+	}, idm::unlocked);
 
 	QTreeWidgetItem* rsx_context_node = find_node(root, additional_nodes::rsx_contexts);
 
@@ -839,7 +838,9 @@ void kernel_explorer::update()
 		}());
 
 		add_leaf(find_node(root, additional_nodes::file_descriptors), qstr(str));
-	});
+	}, idm::unlocked);
+
+	lock_idm_lv2.reset();
 
 	std::function<int(QTreeWidgetItem*)> final_touches;
 	final_touches = [&final_touches](QTreeWidgetItem* item) -> int
