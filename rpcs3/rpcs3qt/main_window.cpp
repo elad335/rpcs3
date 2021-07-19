@@ -408,13 +408,7 @@ void main_window::Boot(const std::string& path, const std::string& title_id, boo
 
 void main_window::BootElf()
 {
-	bool stopped = false;
-
-	if (Emu.IsRunning())
-	{
-		Emu.Pause();
-		stopped = true;
-	}
+	const bool stopped = Emu.Pause();
 
 	const QString path_last_elf = m_gui_settings->GetValue(gui::fd_boot_elf).toString();
 	const QString file_path = QFileDialog::getOpenFileName(this, tr("Select (S)ELF To Boot"), path_last_elf, tr(
@@ -447,13 +441,7 @@ void main_window::BootElf()
 
 void main_window::BootGame()
 {
-	bool stopped = false;
-
-	if (Emu.IsRunning())
-	{
-		Emu.Pause();
-		stopped = true;
-	}
+	const bool stopped = Emu.Pause();
 
 	const QString path_last_game = m_gui_settings->GetValue(gui::fd_boot_game).toString();
 	const QString dir_path = QFileDialog::getExistingDirectory(this, tr("Select Game Folder"), path_last_game, QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
@@ -483,13 +471,7 @@ void main_window::BootRsxCapture(std::string path)
 {
 	if (path.empty())
 	{
-		bool is_stopped = false;
-
-		if (Emu.IsRunning())
-		{
-			Emu.Pause();
-			is_stopped = true;
-		}
+		const bool is_stopped = Emu.Pause();
 
 		const QString file_path = QFileDialog::getOpenFileName(this, tr("Select RSX Capture"), qstr(fs::get_config_dir() + "captures/"), tr("RRC files (*.rrc *.RRC);;All files (*.*)"));
 
