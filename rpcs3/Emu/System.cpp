@@ -1416,16 +1416,26 @@ void Emulator::Run(bool start_playtime)
 	}
 }
 
-bool Emulator::Pause()
+bool Emulator::Pause(bool no_resume)
 {
 	const u64 start = get_system_time();
 
+	const system_state pause_state = no_resume ? system_state::fatal : system_state::paused;
+
 	// Try to pause
-	if (!m_state.compare_and_swap_test(system_state::running, system_state::paused))
+	if (!m_state.compare_and_swap_test(system_state::running, pause_state))
 	{
-		if (!m_state.compare_and_swap_test(system_state::ready, system_state::paused))
+		if (!no_resume)
 		{
 			return false;
+		}
+
+		if (!m_state.compare_and_swap_test(system_state::ready, pause_state))
+		{
+			if (!m_state.compare_and_swap_test(system_state::paused, pause_state))
+			{
+				return false;
+			}
 		}
 	}
 
@@ -1436,7 +1446,10 @@ bool Emulator::Pause()
 
 	static atomic_t<u32> pause_mark = 0;
 
-	sys_log.success("Emulation is being paused... (mark=%u)", pause_mark++);
+	if (!no_resume)
+	{
+		sys_log.success("Emulation is being paused... (mark=%u)", pause_mark++);
+	}
 
 	// Update pause start time
 	if (m_pause_start_time.exchange(start))
