@@ -4826,17 +4826,29 @@ extern void resume_spu_thread_group_from_waiting(spu_thread& spu)
 
 	std::lock_guard lock(group->mutex);
 
+	spu.group->waiter_spu_index.release(u32{umax});
+
+	bool still_running = false;
+
 	if (group->run_state == SPU_THREAD_GROUP_STATUS_WAITING)
 	{
-		group->run_state = SPU_THREAD_GROUP_STATUS_RUNNING;
+		group->run_state.release(SPU_THREAD_GROUP_STATUS_RUNNING);
 	}
 	else if (group->run_state == SPU_THREAD_GROUP_STATUS_WAITING_AND_SUSPENDED)
 	{
-		group->run_state = SPU_THREAD_GROUP_STATUS_SUSPENDED;
+		group->run_state.release(SPU_THREAD_GROUP_STATUS_SUSPENDED);
 		spu.state += cpu_flag::signal;
-		spu.state.notify_one(cpu_flag::signal);
+
+		lv2_obj::g_to_notify[0] = &spu.state;
+		lv2_obj::g_to_notify[1] = nullptr;
 		return;
 	}
+	else
+	{
+		still_running = true;
+	}
+
+	usz notify_later_idx = 0;
 
 	for (auto& thread : group->threads)
 	{
@@ -4845,15 +4857,46 @@ extern void resume_spu_thread_group_from_waiting(spu_thread& spu)
 			if (thread.get() == &spu)
 			{
 				constexpr auto flags = cpu_flag::suspend + cpu_flag::signal;
+
+				if (still_running)
+				{
+					ensure(((thread->state += cpu_flag::signal) & flags) == cpu_flag::signal);
+					return;
+				}
+
 				ensure(((thread->state ^= flags) & flags) == cpu_flag::signal);
 			}
 			else
 			{
+				if (still_running)
+				{
+					continue;
+				}
+
 				thread->state -= cpu_flag::suspend;
+
+				if (cpu_flag::wait - thread->state)
+				{
+					continue;
+				}
 			}
 
-			thread->state.notify_one(cpu_flag::suspend + cpu_flag::signal);
+			if (notify_later_idx == std::size(lv2_obj::g_to_notify))
+			{
+				// Out of notification slots, notify locally (resizable container is not worth it)
+				spu.state.notify_one(cpu_flag::signal);
+			}
+			else
+			{
+				lv2_obj::g_to_notify[notify_later_idx++] = &spu.state;
+			}
 		}
+	}
+
+	if (notify_later_idx != std::size(lv2_obj::g_to_notify))
+	{
+		// Null-terminate the list if it ends before last slot
+		lv2_obj::g_to_notify[notify_later_idx] = nullptr;
 	}
 }
 
@@ -4957,11 +5000,11 @@ bool spu_thread::stop_and_signal(u32 code)
 			return ch_in_mbox.set_values(1, CELL_EINVAL), true;
 		}
 
-		lv2_obj::prepare_for_sleep(*this);
-
 		spu_function_logger logger(*this, "sys_spu_thread_receive_event");
 
 		std::shared_ptr<lv2_event_queue> queue;
+
+		state += cpu_flag::wait;
 
 		while (true)
 		{
@@ -4978,6 +5021,13 @@ bool spu_thread::stop_and_signal(u32 code)
 
 				if (!is_paused(old))
 				{
+					// Checks for self-index for savestates
+					if (group->waiter_spu_index != umax && group->waiter_spu_index != index)
+					{
+						busy_wait(300);
+						continue;
+					}
+
 					// The group is not suspended (anymore)
 					break;
 				}
@@ -4992,11 +5042,85 @@ bool spu_thread::stop_and_signal(u32 code)
 				return ch_in_mbox.set_values(1, CELL_EINVAL), true;
 			}
 
-			// Lock queue's mutex first, then group's mutex
-			std::scoped_lock lock(queue->mutex, group->mutex);
+			if (group->waiter_spu_index != umax || !group->waiter_spu_index.compare_and_swap_test(u32{umax}, index))
+			{
+				if (group->waiter_spu_index != index)
+				{
+					continue;
+				}
+			}
+
+			bool prep = false;
+			bool success = false;
+			bool extinct = false;
+			lv2_event event;
+		
+			while (!queue->control.fetch_op([&](lv2_event_queue::control_t& data)
+			{
+				if (data.extinct)
+				{
+					extinct = true;
+					return false;
+				}
+
+				success = false;
+
+				if ((data.push - data.pop) % queue->events_size)
+				{
+					event = queue->events[data.pop++ % queue->events_size];
+					success = true;
+					return true;
+				}
+
+				if ((data.push2 - data.pop) % queue->events_size)
+				{
+					// An event is currently being pushed, wait for it instead of sleeping
+					return false;
+				}
+
+				if (!prep)
+				{
+					lv2_obj::prepare_for_sleep(*this);
+					prep = true;
+				}
+
+				next_cpu = static_cast<spu_thread*>(data.sq);
+				data.sq = this;
+				return true;
+			}).second)
+			{
+				if (extinct)
+				{
+					group->waiter_spu_index.release(u32{umax});
+					return ch_in_mbox.set_values(1, CELL_EINVAL), true;
+				}
+
+				busy_wait(100);
+			}
+
+			if (success)
+			{
+				// Return the event immediately
+				const auto data1 = static_cast<u32>(std::get<1>(event));
+				const auto data2 = static_cast<u32>(std::get<2>(event));
+				const auto data3 = static_cast<u32>(std::get<3>(event));
+				ch_in_mbox.set_values(4, CELL_OK, data1, data2, data3);
+				next_cpu = nullptr;
+				group->waiter_spu_index.release(u32{umax});
+				return true;
+			}
+
+			std::scoped_lock lock(group->mutex);
+
+			if (state & cpu_flag::signal)
+			{
+				// An event has already been received 
+				return true;
+			}
 
 			if (is_stopped())
 			{
+				group->waiter_spu_index.release(u32{umax});
 				state += cpu_flag::again;
 				return false;
 			}
@@ -5007,29 +5131,13 @@ bool spu_thread::stop_and_signal(u32 code)
 				lv2_obj::sleep(*this);
 			}
 
-			if (group->run_state >= SPU_THREAD_GROUP_STATUS_WAITING && group->run_state <= SPU_THREAD_GROUP_STATUS_WAITING_AND_SUSPENDED)
+			if (group->run_state == SPU_THREAD_GROUP_STATUS_SUSPENDED)
 			{
-				// Try again
-				ensure(state & cpu_flag::suspend);
-				continue;
+				group->run_state.release(SPU_THREAD_GROUP_STATUS_WAITING_AND_SUSPENDED);
 			}
-
-			if (queue != get_queue(spuq))
+			else
 			{
-				// Try again
-				continue;
-			}
-
-			if (!queue->exists)
-			{
-				return ch_in_mbox.set_values(1, CELL_EINVAL), true;
-			}
-
-			if (queue->events.empty())
-			{
-				lv2_obj::emplace(queue->sq, this);
-				group->run_state = SPU_THREAD_GROUP_STATUS_WAITING;
-				group->waiter_spu_index = index;
+				ensure(group->run_state == SPU_THREAD_GROUP_STATUS_RUNNING);
 
 				for (auto& thread : group->threads)
 				{
@@ -5039,20 +5147,11 @@ bool spu_thread::stop_and_signal(u32 code)
 					}
 				}
 
-				// Wait
-				break;
+				group->run_state.release(SPU_THREAD_GROUP_STATUS_WAITING);
 			}
-			else
-			{
-				// Return the event immediately
-				const auto event = queue->events.front();
-				const auto data1 = static_cast<u32>(std::get<1>(event));
-				const auto data2 = static_cast<u32>(std::get<2>(event));
-				const auto data3 = static_cast<u32>(std::get<3>(event));
-				ch_in_mbox.set_values(4, CELL_OK, data1, data2, data3);
-				queue->events.pop_front();
-				return true;
-			}
+
+			// Wait
+			break;
 		}
 
 		while (auto old = +state)
@@ -5103,52 +5202,48 @@ bool spu_thread::stop_and_signal(u32 code)
 
 		spu_log.trace("sys_spu_thread_tryreceive_event(spuq=0x%x)", spuq);
 
-		std::shared_ptr<lv2_event_queue> queue;
+		reader_lock rlock(group->mutex);
+		const auto queue = get_queue(spuq);
 
-		reader_lock{group->mutex}, queue = get_queue(spuq);
-
-		std::unique_lock<shared_mutex> qlock, group_lock;
-
-		while (true)
-		{
-			if (!queue)
-			{
-				return ch_in_mbox.set_values(1, CELL_EINVAL), true;
-			}
-
-			// Lock queue's mutex first, then group's mutex
-			qlock = std::unique_lock{queue->mutex};
-			group_lock = std::unique_lock{group->mutex};
-
-			if (const auto& queue0 = get_queue(spuq); queue != queue0)
-			{
-				// Keep atleast one reference of the pointer so mutex unlock can work
-				const auto old_ref = std::exchange(queue, queue0);
-				group_lock.unlock();
-				qlock.unlock();
-			}
-			else
-			{
-				break;
-			}
-		}
-
-		if (!queue->exists)
+		if (!queue)
 		{
 			return ch_in_mbox.set_values(1, CELL_EINVAL), true;
 		}
 
-		if (queue->events.empty())
+		bool extinct = false;
+		lv2_event event;
+	
+		const bool success = queue->control.fetch_op([&](lv2_event_queue::control_t& data)
+		{
+			if (data.extinct)
+			{
+				extinct = true;
+				return false;
+			}
+
+			if (data.push != data.pop)
+			{
+				event = queue->events[data.pop++ % queue->events_size];
+				return true;
+			}
+
+			return false;
+		}).second;
+
+		if (extinct)
+		{
+			return ch_in_mbox.set_values(1, CELL_EINVAL), true;
+		}
+
+		if (!success)
 		{
 			return ch_in_mbox.set_values(1, CELL_EBUSY), true;
 		}
 
-		const auto event = queue->events.front();
 		const auto data1 = static_cast<u32>(std::get<1>(event));
 		const auto data2 = static_cast<u32>(std::get<2>(event));
 		const auto data3 = static_cast<u32>(std::get<3>(event));
 		ch_in_mbox.set_values(4, CELL_OK, data1, data2, data3);
-		queue->events.pop_front();
 		return true;
 	}
 

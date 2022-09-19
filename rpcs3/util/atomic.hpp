@@ -124,6 +124,14 @@ enum class atomic_wait_timeout : u64
 	inf = 0xffffffffffffffff,
 };
 
+enum class atomic_op_result
+{
+	store,
+	ok = store,
+	ignore,
+	abort,
+};
+
 // Various extensions for atomic_t::wait
 namespace atomic_wait
 {
@@ -1318,6 +1326,27 @@ public:
 				if (atomic_storage<type>::compare_exchange(m_data, old, _new)) [[likely]]
 				{
 					return old;
+				}
+			}
+			else if constexpr (std::is_same_v<RT, atomic_op_result>)
+			{
+				RT ret = std::invoke(func, _new);
+
+				if (ret == atomic_op_result::abort)
+				{
+					return {old, ret};
+				}
+				
+				if (ret != atomic_op_result::ignore)
+				{
+					if (atomic_storage<type>::compare_exchange(m_data, old, _new)) [[likely]]
+					{
+						return {old, ret};
+					}
+				}
+				else
+				{
+					old = atomic_storage<type>::load(m_data);
 				}
 			}
 			else

@@ -4,8 +4,6 @@
 
 #include "Emu/Memory/vm_ptr.h"
 
-#include <deque>
-
 class cpu_thread;
 class spu_thrread;
 
@@ -91,9 +89,21 @@ struct lv2_event_queue final : public lv2_obj
 	const u64 key;
 
 	shared_mutex mutex;
-	std::deque<lv2_event> events;
-	spu_thread* sq{};
-	ppu_thread* pq{};
+
+	static constexpr u8 events_size = 128;
+	alignas(32) std::array<lv2_event, events_size> events;
+
+	struct alignas(16) control_t
+	{
+		u32 push;
+		u8 push2;
+		u8 pop;
+		b8 extinct;
+		u8 reserved;
+		cpu_thread* sq; 
+	};
+
+	atomic_t<control_t> control{};
 
 	lv2_event_queue(u32 protocol, s32 type, s32 size, u64 name, u64 ipc_key) noexcept;
 

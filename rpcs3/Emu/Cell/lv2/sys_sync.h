@@ -461,6 +461,12 @@ public:
 	// Scheduler mutex
 	static shared_mutex g_mutex;
 
+	// Pending list of threads to notify (cpu_thread::state ptr)
+	static thread_local std::add_pointer_t<const void> g_to_notify[4];
+
+	// If a notify_all_t object exists locally, postpone notifications to the destructor of it (not recursive, notifies on the first destructor for safety)
+	static thread_local bool g_postpone_notify_barrier;
+
 private:
 	// Pending list of threads to run
 	static thread_local std::vector<class cpu_thread*> g_to_awake;
@@ -470,12 +476,6 @@ private:
 
 	// Waiting for the response from
 	static u32 g_pending;
-
-	// Pending list of threads to notify (cpu_thread::state ptr)
-	static thread_local std::add_pointer_t<const void> g_to_notify[4];
-
-	// If a notify_all_t object exists locally, postpone notifications to the destructor of it (not recursive, notifies on the first destructor for safety)
-	static thread_local bool g_postpone_notify_barrier;
 
 	static void schedule_all(u64 current_time = 0);
 };

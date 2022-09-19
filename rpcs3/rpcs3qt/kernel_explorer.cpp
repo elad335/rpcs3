@@ -417,8 +417,9 @@ void kernel_explorer::update()
 		case SYS_EVENT_QUEUE_OBJECT:
 		{
 			auto& eq = static_cast<lv2_event_queue&>(obj);
+			const auto control = eq.control.load();
 			show_waiters(add_solid_node(node, qstr(fmt::format(u8"Event Queue 0x%08x: “%s”, %s, %s, Key: %#llx, Events: %zu/%d", id, lv2_obj::name64(eq.name), eq.protocol,
-				eq.type == SYS_SPU_QUEUE ? "SPU" : "PPU", eq.key, eq.events.size(), eq.size))), eq.type == SYS_SPU_QUEUE ? static_cast<cpu_thread*>(+eq.sq) : +eq.pq);
+				eq.type == SYS_SPU_QUEUE ? "SPU" : "PPU", eq.key, (control.push - control.pop) % eq.events_size, eq.size))), control.sq);
 			break;
 		}
 		case SYS_EVENT_PORT_OBJECT:

@@ -32,7 +32,11 @@ lv2_event_queue::lv2_event_queue(utils::serial& ar) noexcept
 	, name(ar)
 	, key(ar)
 {
-	ar(events);
+	const std::vector<lv2_event> events_save = ar;
+	std::copy(events_save.begin(), events_save.end(), events.begin());
+
+	auto& c = control.raw();
+	c.push = ::narrow<s8>(events_save.size());
 }
 
 std::shared_ptr<void> lv2_event_queue::load(utils::serial& ar)
@@ -43,7 +47,19 @@ std::shared_ptr<void> lv2_event_queue::load(utils::serial& ar)
 
 void lv2_event_queue::save(utils::serial& ar)
 {
-	ar(protocol, type, size, name, key, events);
+	ar(protocol, type, size, name, key);
+
+	const auto c = control.load();
+
+	std::vector<lv2_event> events_save;
+	events_save.reserve((c.push - c.pop) % events_size);
+
+	for (u32 i = c.push % events_size; i != c.pop % events_size; i = (i + 1) % events_size)
+	{
+		events_save.emplace_back(events[i]);
+	}
+
+	ar(events_save);
 }
 
 void lv2_event_queue::save_ptr(utils::serial& ar, lv2_event_queue* q)
@@ -111,43 +127,152 @@ extern void resume_spu_thread_group_from_waiting(spu_thread& spu);
 
 CellError lv2_event_queue::send(lv2_event event)
 {
-	std::lock_guard lock(mutex);
+	std::unique_lock lock(mutex, std::defer_lock);
 
-	if (!exists)
-	{
-		return CELL_ENOTCONN;
-	}
+	cpu_thread* cpu{};
+	cpu_thread* restore_next{};
+	CellError error{};
 
-	if (!pq && !sq)
+	auto old = control.fetch_op([&](lv2_event_queue::control_t& data) -> atomic_op_result
 	{
-		if (events.size() < this->size + 0u)
+		if (data.extinct)
 		{
-			// Save event
-			events.emplace_back(event);
-			return {};
+			error = CELL_ENOTCONN;
+			return atomic_op_result::abort;
 		}
 
-		return CELL_EBUSY;
+		if (data.sq)
+		{
+			if (!lock)
+			{
+				lock.lock();
+
+				// Retry
+				return atomic_op_result::ignore;
+			}
+
+			if (restore_next)
+			{
+				if (type == SYS_PPU_QUEUE)
+				{
+					static_cast<ppu_thread*>(cpu)->next_cpu = static_cast<ppu_thread*>(restore_next);
+				}
+				else
+				{
+					static_cast<spu_thread*>(cpu)->next_cpu = static_cast<spu_thread*>(restore_next);
+				}
+
+				restore_next = nullptr;
+			}
+
+			error = CELL_EAGAIN;
+
+			auto old = data.sq;
+
+			if (type == SYS_PPU_QUEUE)
+			{
+				ppu_thread* sq = static_cast<ppu_thread*>(data.sq);
+				restore_next = sq->next_cpu;
+				cpu = schedule<ppu_thread>(sq, protocol);
+
+				if (sq == old)
+				{
+					return atomic_op_result::abort;
+				}
+
+				data.sq = sq;
+			}
+			else
+			{
+				spu_thread* sq = static_cast<spu_thread*>(data.sq);
+				restore_next = sq->next_cpu;
+				cpu = schedule<spu_thread>(sq, protocol);
+
+				if (sq == old)
+				{
+					return atomic_op_result::abort;
+				}
+
+				data.sq = sq;
+			}
+
+			return atomic_op_result::ok;
+		}
+
+		if ((data.push2 - data.pop) % events_size < this->size)
+		{
+			// Reserve a slot for an event
+			data.push2++;
+			error = {};
+			return atomic_op_result::ok;
+		}
+
+		error = CELL_EBUSY;
+		return atomic_op_result::abort;
+	}).first;
+
+	switch (error)
+	{
+	case CellError{}:
+	{
+		// Store the event (relaxed operation)
+		events[old.push2 % events_size] = event;
+
+		// Complete the insert
+		while (true)
+		{
+			u32 push = atomic_storage<u32>::load(control.raw().push);
+			const u32 distance = (old.push2 - push) % events_size;
+
+			if (!distance)
+			{
+				// Increment the push index and perform queued increments
+				if (atomic_storage<u32>::compare_exchange(control.raw().push, push, (push + 1 + push / events_size) % events_size))
+				{
+					break;
+				}
+			}
+			else
+			{
+				if (distance - 1 != (push / events_size))
+				{
+					// Wait for the previous store to complete
+					busy_wait(100);
+					continue;
+				}
+
+				// If the 'first' store hasn't been completed, don't wait for it
+				// Queue the incrementation and return
+				if (atomic_storage<u32>::compare_exchange(control.raw().push, push, push + events_size))
+				{
+					break;
+				}
+			}
+		}
+
+		return {};
+	}
+	case CELL_EAGAIN: break;
+	default: return error;
+	}
+
+	if (cpu->state & cpu_flag::again)
+	{
+		if (auto current = cpu_thread::get_current())
+		{
+			current->state += cpu_flag::again;
+		}
+
+		sys_event.warning("Ignored event!");
+
+		// Fake error for abort
+		return CELL_EAGAIN;
 	}
 
 	if (type == SYS_PPU_QUEUE)
 	{
 		// Store event in registers
-		auto& ppu = static_cast<ppu_thread&>(*schedule<ppu_thread>(pq, protocol));
-
-		if (ppu.state & cpu_flag::again)
-		{
-			if (auto cpu = get_current_cpu_thread())
-			{
-				cpu->state += cpu_flag::again;
-				cpu->state += cpu_flag::exit;
-			}
-
-			sys_event.warning("Ignored event!");
-
-			// Fake error for abort
-			return CELL_EAGAIN;
-		}
+		auto& ppu = static_cast<ppu_thread&>(*cpu);
 
 		std::tie(ppu.gpr[4], ppu.gpr[5], ppu.gpr[6], ppu.gpr[7]) = event;
 
@@ -156,26 +281,19 @@ CellError lv2_event_queue::send(lv2_event event)
 	else
 	{
 		// Store event in In_MBox
-		auto& spu = static_cast<spu_thread&>(*schedule<spu_thread>(sq, protocol));
-	
-		if (spu.state & cpu_flag::again)
-		{
-			if (auto cpu = get_current_cpu_thread())
-			{
-				cpu->state += cpu_flag::exit + cpu_flag::again;
-			}
-
-			sys_event.warning("Ignored event!");
-
-			// Fake error for abort
-			return CELL_EAGAIN;
-		}
+		auto& spu = static_cast<spu_thread&>(*cpu);
 
 		const u32 data1 = static_cast<u32>(std::get<1>(event));
 		const u32 data2 = static_cast<u32>(std::get<2>(event));
 		const u32 data3 = static_cast<u32>(std::get<3>(event));
 		spu.ch_in_mbox.set_values(4, CELL_OK, data1, data2, data3);
 		resume_spu_thread_group_from_waiting(spu);
+
+		if (!lv2_obj::g_postpone_notify_barrier)
+		{
+			lock.unlock();
+			lv2_obj::notify_all();
+		}
 	}
 
 	return {};
@@ -235,45 +353,50 @@ error_code sys_event_queue_destroy(ppu_thread& ppu, u32 equeue_id, s32 mode)
 		return CELL_EINVAL;
 	}
 
-	std::vector<lv2_event> events;
-
 	std::unique_lock<shared_mutex> qlock;
 
-	cpu_thread* head{};
+	lv2_event_queue::control_t control{};
 
 	const auto queue = idm::withdraw<lv2_obj, lv2_event_queue>(equeue_id, [&](lv2_event_queue& queue) -> CellError
 	{
 		qlock = std::unique_lock{queue.mutex};
 
-		head = queue.type == SYS_PPU_QUEUE ? static_cast<cpu_thread*>(+queue.pq) : +queue.sq;
-
-		if (!mode && head)
+		control = queue.control.fetch_op([&](lv2_event_queue::control_t& data)
 		{
-			return CELL_EBUSY;
-		}
+			if (!mode && data.sq)
+			{
+				return false;
+			}
 
-		if (!queue.events.empty())
-		{
-			// Copy events for logging, does not empty
-			events.insert(events.begin(), queue.events.begin(), queue.events.end());
-		}
-
-		lv2_obj::on_id_destroy(queue, queue.key);
-
-		if (!head)
-		{
-			qlock.unlock();
-		}
-		else
-		{
-			for (auto cpu = head; cpu; cpu = cpu->get_next_cpu())
+			for (auto cpu = data.sq; cpu; cpu = cpu->get_next_cpu())
 			{
 				if (cpu->state & cpu_flag::again)
 				{
 					ppu.state += cpu_flag::again;
-					return CELL_EAGAIN;
+					return false;
 				}
 			}
+
+			data.extinct = true;
+			data.pop = data.push;
+			return true;
+		}).first;
+
+		if (ppu.state & cpu_flag::again)
+		{
+			return CELL_EAGAIN;
+		}
+
+		if (!mode && control.sq)
+		{
+			return CELL_EBUSY;
+		}
+
+		lv2_obj::on_id_destroy(queue, queue.key);
+
+		if (!control.sq)
+		{
+			qlock.unlock();
 		}
 
 		return {};
@@ -302,14 +425,14 @@ error_code sys_event_queue_destroy(ppu_thread& ppu, u32 equeue_id, s32 mode)
 		{
 			u32 size = 0;
 
-			for (auto cpu = head; cpu; cpu = cpu->get_next_cpu())
+			for (auto cpu = control.sq; cpu; cpu = cpu->get_next_cpu())
 			{
 				size++;
 			}
 
 			fmt::append(lost_data, "Forcefully awaken waiters (%u):\n", size);
 
-			for (auto cpu = head; cpu; cpu = cpu->get_next_cpu())
+			for (auto cpu = control.sq; cpu; cpu = cpu->get_next_cpu())
 			{
 				lost_data += cpu->get_name();
 				lost_data += '\n';
@@ -318,24 +441,21 @@ error_code sys_event_queue_destroy(ppu_thread& ppu, u32 equeue_id, s32 mode)
 
 		if (queue->type == SYS_PPU_QUEUE)
 		{
-			for (auto cpu = +queue->pq; cpu; cpu = cpu->next_cpu)
+			for (auto cpu = static_cast<ppu_thread*>(control.sq); cpu; cpu = cpu->next_cpu)
 			{
 				cpu->gpr[3] = CELL_ECANCELED;
 				queue->append(cpu);
 			}
 
-			atomic_storage<ppu_thread*>::release(queue->pq, nullptr); 
 			lv2_obj::awake_all();
 		}
 		else
 		{
-			for (auto cpu = +queue->sq; cpu; cpu = cpu->next_cpu)
+			for (auto cpu = static_cast<spu_thread*>(control.sq); cpu; cpu = cpu->next_cpu)
 			{
 				cpu->ch_in_mbox.set_values(1, CELL_ECANCELED);
 				resume_spu_thread_group_from_waiting(*cpu);
 			}
-
-			atomic_storage<spu_thread*>::release(queue->sq, nullptr); 
 		}
 
 		qlock.unlock();
@@ -343,13 +463,14 @@ error_code sys_event_queue_destroy(ppu_thread& ppu, u32 equeue_id, s32 mode)
 
 	if (sys_event.warning)
 	{
-		if (!events.empty())
+		if ((control.push - control.pop) % queue->events_size)
 		{
-			fmt::append(lost_data, "Unread queue events (%u):\n", events.size());
+			fmt::append(lost_data, "Unread queue events (%u):\n", (control.push - control.pop) % queue->events_size);
 		}
 
-		for (const lv2_event& evt : events)
+		for (u32 i = control.push % queue->events_size; i != control.pop % queue->events_size; i = (i + 1) % queue->events_size)
 		{
+			auto& evt = queue->events[i];
 			fmt::append(lost_data, "data0=0x%x, data1=0x%x, data2=0x%x, data3=0x%x\n"
 				, std::get<0>(evt), std::get<1>(evt), std::get<2>(evt), std::get<3>(evt));
 		}
@@ -381,22 +502,53 @@ error_code sys_event_queue_tryreceive(ppu_thread& ppu, u32 equeue_id, vm::ptr<sy
 		return CELL_EINVAL;
 	}
 
-	std::lock_guard lock(queue->mutex);
+	bool extinct = false;
+	bool success = false;
+	s32 count = 0;
+	alignas(32) std::array<lv2_event, 127> events;
 
-	if (!queue->exists)
+	while (!success)
 	{
-		return CELL_ESRCH;
+		queue->control.fetch_op([&](lv2_event_queue::control_t& data)
+		{
+			if (data.extinct)
+			{
+				extinct = true;
+				return false;
+			}
+
+			const s32 qsize = (data.push - data.pop) % queue->events_size;
+
+			if (size > qsize && (data.push2 - data.push) % queue->events_size)
+			{
+				success = false;
+				return false;
+			}
+
+			success = true;
+
+			if (count = std::min<s32>(qsize, size); count > 0)
+			{
+				// Pull the events into temporary storage
+				std::copy_n(&queue->events[data.pop % queue->events_size], count, events.data());
+				data.pop += count;
+				return true;
+			}
+
+			return false;
+		});
+
+		if (extinct)
+		{
+			return CELL_ESRCH;
+		}
 	}
 
-	s32 count = 0;
-
-	while (count < size && !queue->events.empty())
+	for (s32 i = 0; i < count; i++)
 	{
-		auto& dest = event_array[count++];
-		const auto event = queue->events.front();
-		queue->events.pop_front();
-
-		std::tie(dest.source, dest.data1, dest.data2, dest.data3) = event;
+		// Write out the events after the pop has been completed
+		auto& dest = event_array[i];
+		std::tie(dest.source, dest.data1, dest.data2, dest.data3) = events[i];
 	}
 
 	*number = count;
@@ -419,9 +571,47 @@ error_code sys_event_queue_receive(ppu_thread& ppu, u32 equeue_id, vm::ptr<sys_e
 			return CELL_EINVAL;
 		}
 
-		lv2_obj::prepare_for_sleep(ppu);
+		bool prep = false;
+		bool success = false;
+	
+		while (!queue.control.fetch_op([&](lv2_event_queue::control_t& data)
+		{
+			success = false;
 
-		std::lock_guard lock(queue.mutex);
+			if ((data.push - data.pop) % queue.events_size)
+			{
+				std::tie(ppu.gpr[4], ppu.gpr[5], ppu.gpr[6], ppu.gpr[7]) = queue.events[data.pop++ % queue.events_size];
+				success = true;
+				return true;
+			}
+
+			if ((data.push2 - data.pop) % queue.events_size)
+			{
+				// An event is currently being pushed, wait for it instead of sleeping
+				return false;
+			}
+
+			if (!prep)
+			{
+				ppu.cancel_sleep = 1;
+				lv2_obj::prepare_for_sleep(ppu);
+				prep = true;
+			}
+
+			ppu.next_cpu = static_cast<ppu_thread*>(data.sq);
+			data.sq = &ppu;
+			return true;
+		}).second)
+		{
+			busy_wait(100);
+		}
+
+		if (success)
+		{
+			ppu.cancel_sleep = 0;
+			ppu.next_cpu = nullptr;
+			return {};
+		}
 
 		// "/dev_flash/vsh/module/msmw2.sprx" seems to rely on some cryptic shared memory behaviour that we don't emulate correctly
 		// This is a hack to avoid waiting for 1m40s every time we boot vsh
@@ -431,15 +621,14 @@ error_code sys_event_queue_receive(ppu_thread& ppu, u32 equeue_id, vm::ptr<sys_e
 			timeout = 1;
 		}
 
-		if (queue.events.empty())
+		success = !queue.sleep(ppu, timeout);
+		notify.cleanup();
+
+		if (!success)
 		{
-			queue.sleep(ppu, timeout);
-			lv2_obj::emplace(queue.pq, &ppu);
 			return CELL_EBUSY;
 		}
 
-		std::tie(ppu.gpr[4], ppu.gpr[5], ppu.gpr[6], ppu.gpr[7]) = queue.events.front();
-		queue.events.pop_front();
 		return {};
 	});
 
@@ -470,9 +659,9 @@ error_code sys_event_queue_receive(ppu_thread& ppu, u32 equeue_id, vm::ptr<sys_e
 
 		if (is_stopped(state))
 		{
-			std::lock_guard lock_rsx(queue->mutex);
+			std::lock_guard lock(queue->mutex);
 
-			for (auto cpu = +queue->pq; cpu; cpu = cpu->next_cpu)
+			for (auto cpu = static_cast<ppu_thread*>(queue->control.load().sq); cpu; cpu = cpu->next_cpu)
 			{
 				if (cpu == &ppu)
 				{
@@ -504,9 +693,49 @@ error_code sys_event_queue_receive(ppu_thread& ppu, u32 equeue_id, vm::ptr<sys_e
 					continue;
 				}
 
+				cpu_thread* restore_next{};
+
 				std::lock_guard lock(queue->mutex);
 
-				if (!queue->unqueue(queue->pq, &ppu))
+				bool success = false;
+
+				queue->control.fetch_op([&](lv2_event_queue::control_t& data)
+				{
+					success = false;
+
+					if (restore_next)
+					{
+						ppu.next_cpu = static_cast<ppu_thread*>(restore_next);
+						restore_next = nullptr;
+					}
+
+					if (!data.sq)
+					{
+						return false;
+					}
+
+					ppu_thread* sq = static_cast<ppu_thread*>(data.sq);
+					restore_next = sq->next_cpu;
+
+					const bool retval = &ppu == sq;
+
+					if (!queue->unqueue(sq, &ppu))
+					{
+						return false;
+					}
+
+					success = true;
+
+					if (!retval)
+					{
+						return false;
+					}
+
+					data.sq = sq;
+					return true;
+				});
+
+				if (success)
 				{
 					break;
 				}
@@ -532,9 +761,29 @@ error_code sys_event_queue_drain(ppu_thread& ppu, u32 equeue_id)
 
 	const auto queue = idm::check<lv2_obj, lv2_event_queue>(equeue_id, [&](lv2_event_queue& queue)
 	{
-		std::lock_guard lock(queue.mutex);
+		bool success = false;
 
-		queue.events.clear();
+		while (!success)
+		{
+			queue.control.fetch_op([&](lv2_event_queue::control_t& data)
+			{
+				success = true;
+
+				if ((data.push2 - data.pop) % queue.events_size)
+				{
+					if ((data.push2 - data.push) % queue.events_size)
+					{
+						success = false;
+						return false;
+					}
+
+					data.pop = data.push;
+					return true;
+				}
+
+				return false;
+			});
+		}
 	});
 
 	if (!queue)
