@@ -486,8 +486,16 @@ void Emulator::Init(bool add_only)
 				sys_log.success("Fixed save data: %s", desired);
 			}
 
+			usz index_of_save = umax;
+
+			// Search for the latest backup
+			while (fs::is_dir(save_path + ".backup" + (index_of_save != umax ? std::to_string(index_of_save + 1) : "") + '_' + desired)
+			{
+				index_of_save++;
+			}
+
 			// Remove pending backup data
-			if (!fs::remove_all(save_path + entry.name))
+			if (index_of_save != umax && !fs::remove_all(save_path + ".backup" + (index_of_save != 0 ? std::to_string(index_of_save) : "") + '_' + desired))
 			{
 				sys_log.fatal("Failed to remove save data backup: %s%s (%s)", save_path, entry.name, fs::g_tls_error);
 			}
