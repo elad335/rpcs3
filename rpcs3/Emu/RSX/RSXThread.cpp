@@ -3089,6 +3089,15 @@ namespace rsx
 		recovered_fifo_cmds_history.push({fifo_ctrl->last_cmd(), current_time});
 	}
 
+	std::string thread::dump_misc() const
+	{
+		std::string ret = cpu_thread::dump_misc();
+		fmt::append(ret, "\n");
+		fmt::append(ret, "\nFragment Program Hash: %llX.fp", program_hash_util::fragment_program_utils::get_fragment_program_ucode_hash(current_fragment_program));
+		fmt::append(ret, "\nVertex Program Hash: %llX.vp", program_hash_util::vertex_program_utils::get_vertex_program_ucode_hash(current_vertex_program));
+		return ret;
+	}
+
 	std::vector<std::pair<u32, u32>> thread::dump_callstack_list() const
 	{
 		std::vector<std::pair<u32, u32>> result;

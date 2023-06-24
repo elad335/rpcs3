@@ -479,7 +479,7 @@ usz fragment_program_utils::get_fragment_program_ucode_hash(const RSXFragmentPro
 	usz hash = 0xCBF29CE484222325ULL;
 	const void* instbuffer = program.get_data();
 	usz instIndex = 0;
-	while (true)
+	while (instbuffer)
 	{
 		const auto inst = v128::loadu(instbuffer, instIndex);
 		hash ^= inst._u64[0];
