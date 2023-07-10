@@ -340,7 +340,6 @@ struct spu_iflag
 		RDCH,
 		RCHCNT,
 		FSCRRD,
-		IOHL,
 
 		WRCH = use_rc,
 		STQA,
@@ -349,6 +348,7 @@ struct spu_iflag
 		BRZ,
 		BRHNZ,
 		BRHZ,
+		IOHL = use_rc | set_rt,
 
 		STQD = use_ra | use_rc,
 		BIZ,
