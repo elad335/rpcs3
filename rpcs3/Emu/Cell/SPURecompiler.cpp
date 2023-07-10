@@ -5444,6 +5444,319 @@ public:
 					(this->*decode(op))({op});
 				}
 
+				u32 true_end = baddr;
+
+				// Emit instructions
+				for (true_end = baddr; true_end >= start && true_end < end; true_end += 4)
+				{
+					if (true_end != baddr && m_block_info[true_end / 4])
+					{
+						break;
+					}
+
+					const u32 op = std::bit_cast<be_t<u32>>(func.data[(true_end - start) / 4]);
+					const spu_opcode_t spu_op{op};
+
+					if (!op)
+					{
+						break;
+					}
+
+					const auto type = g_spu_itype.decode(op);
+					if (type & spu_itype::branch)
+					{
+						if (type == spu_itype::BRSL && spu_branch_target(true_end, spu_op.i16) == true_end + 4)
+						{
+							continue;
+						}
+
+						break;
+					}
+
+					if (type == spu_ityp::SYNC)
+					{
+						break;
+					}
+				}
+
+				enum class spu_value_t : u32 {};
+
+				auto create_value_id = [value = u32{0}]() mutable -> spu_value_t
+				{
+					return spu_value_t{++value};
+				}
+
+				struct spu_instruction_node_t;
+
+				struct spu_instruction_node_t
+				{
+					// Operative data
+					std::bsic_string<spu_value_t> dependencies_plain; // all previous dependenacies, unorginized
+					spu_instruction_node_t* ra = nullptr; // op.ra used register instruction origin
+					spu_instruction_node_t* rb = nullptr; // op.rb used register instruction origin
+					spu_instruction_node_t* rc = nullptr; // op.rc used register instruction origin
+					spu_value_t value_id{}; // Intruction resultant value (0 if does not create one or is const_value)
+					v128 const_value{};
+					std::deque<spu_instruction_node_t*> dependant_upon; // All instructions using the result of this instruction
+
+					// Debug data
+					u32 pc = umax;
+					u32 opcode = 0;
+					u32 op_rt = umax;
+				};
+
+				std::deque<spu_instruction_node_t> spu_instruction_nodes{};
+				std::array<spu_instruction_node_t*, s_reg_127 + 1> registers_storage;
+
+				for (m_pos = baddr; m_pos < true_end; m_pos += 4)
+				{
+					const u32 u32_op = std::bit_cast<be_t<u32>>(func.data[(true_end - start) / 4]);
+					const spu_opcode_t spu_op{u32_op};
+
+					if (!u32_op)
+					{
+						break;
+					}
+
+					auto& inst_data = spu_instruction_nodes.emplace_back();
+					inst_data.pc = m_pos;
+					inst_data.opcode = u32_op;
+
+					const auto type = g_spu_itype.decode(u32_op);
+
+					if (auto iflags = g_spu_iflag.decode(u32_op))
+					{
+						if (+iflags & +spu_iflag::use_ra)
+							inst_data.ra = registers_storage[op.ra];
+						if (+iflags & +spu_iflag::use_rb)
+							inst_data.rb = registers_storage[op.rb];
+						if (+iflags & +spu_iflag::use_rc)
+							inst_data.rc = registers_storage[op.rc];
+
+						if (inst_data.rc)
+						{
+							inst_data.rc->dependant_upon.emplace_back(&inst_data);
+						}
+
+						if (inst_data.rb)
+						{
+							inst_data.rb->dependant_upon.emplace_back(&inst_data);
+						}
+
+						if (inst_data.ra)
+						{
+							inst_data.ra->dependant_upon.emplace_back(&inst_data);
+						}
+
+						if (+iflags & +spu_iflag::set_rt)
+						{
+							registers_storage[op.rt] = &inst_data;
+							inst_data.op_rt = op.rt;
+						}
+
+						if (+iflags & +spu_iflag::set_rt4)
+						{
+							registers_storage[op.rt4] = &inst_data;
+							inst_data.op_rt = op.rt4;
+						}
+
+						bool is_const = true;
+						bool is_move = false;
+
+						auto move = [&](spu_instruction_node_t* dst, spu_instruction_node_t* src)
+						{
+							if (src)
+							{
+								dst->const_value = src->const_value;
+								dst->value_id = src->value_id;
+								is_const = dst->value_id == spu_value_t{};
+								is_move = true;
+							}
+							else
+							{
+								is_const = false;
+							}
+						};
+
+						switch (type)
+						{
+						case spu_itype::IL:
+						{
+							inst_data.const_value = v128::from32p(op.si16);
+							break;
+						}
+						case spu_itype::ILA:
+						{
+							inst_data.const_value = v128::from32p(op.i18) };
+							break;
+						}
+						case spu_itype::ILHU:
+						{
+							inst_data.const_value =  v128::from32p(op.i16 << 16) };
+							break;
+						}
+						case spu_itype::ILH:
+						{
+							inst_data.const_value = v128::from16p(op.i16) };
+							break;
+						}
+						case spu_itype::CBD:
+						case spu_itype::CHD:
+						case spu_itype::CWD:
+						case spu_itype::CDD:
+						{
+							// // Aligned stack assumption
+							// if (op0.ra == 1u)
+							// {
+							// 	u32 size = 0;
+
+							// 	switch (type)
+							// 	{
+							// 	case spu_itype::CBD: size = 1; break;
+							// 	case spu_itype::CHD: size = 2; break;
+							// 	case spu_itype::CWD: size = 4; break;
+							// 	case spu_itype::CDD: size = 8; break;
+							// 	default: fmt::throw_exception("Unreachable");
+							// 	}
+
+							// 	const u32 index = (~op0.i7 & 0xf) / size;
+							// 	auto res = v128::from64(0x18191A1B1C1D1E1Full, 0x1011121314151617ull);
+
+							// 	switch (size)
+							// 	{
+							// 	case 1: res._u8[index]  = 0x03; break;
+							// 	case 2: res._u16[index] = 0x0203; break;
+							// 	case 4: res._u32[index] = 0x00010203; break;
+							// 	case 8: res._u64[index] = 0x0001020304050607ull; break;
+							// 	default: fmt::throw_exception("Unreachable");
+							// 	}
+
+							// 	return {true, res};
+							// }
+
+							// return {};
+							is_const = false;
+							break;
+						}
+						case spu_itype::FSMBI:
+						{
+							v128 res;
+
+							for (s32 i = 0; i < 16; i++)
+							{
+								res._u8[i] = (op.i16 & (1 << i)) ? 0xFF : 0x00;
+							}
+
+							inst_data.const_value = res;
+							break;
+						}
+						case spu_itype::IOHL:
+						{
+							if (op.i16 == 0 && inst_data.rc)
+							{
+								inst_data.const_value = inst_data.rc->const_value;
+								inst_data.value_id = inst_data.rc->value_id;
+								is_const = inst_data.rc->value_id == spu_value_t{};
+								break;
+							}
+
+							if (inst_data.rc && inst_data.rc->value_id == spu_value_t{})
+							{
+								inst_data.const_value |= v128::from32p(op.i16);
+								break;
+							}
+
+							is_const = false;
+							break;
+						}
+						case spu_itype::STQA:
+						case spu_itype::STQD:
+						case spu_itype::STQR:
+						case spu_itype::STQX:
+						case spu_itype::WRCH:
+						{
+							// Do not modify RT
+							is_const = false;
+							break;
+						}
+						case spu_itype::SHLQBYI:
+						{
+							if (op0.si7)
+							{
+								// Unimplemented, doubt needed
+								is_const = false;
+								break;
+							}
+
+							// Move register value operation
+							if (inst_data.ra)
+							{
+								move(&inst_data, inst_data.ra);
+								break;
+							}
+
+							is_const = false;
+							break;
+						}
+						case spu_itype::ORI:
+						{
+							if (op.i10 == 0)
+							{
+								move(&inst_data, inst_data.ra);
+								break;
+							}
+
+							if (inst_data.ra && inst_data.ra->value_id == spu_value_t{})
+							{
+								inst_data.const_value |= v128::from32p(op.i10);
+								break;
+							}
+
+							is_const = false;
+							break;
+						}
+						default:
+						{
+							is_const = false;
+							break;
+						}
+						}
+
+						if (inst_data.op_rt != umax && !is_const)
+						{
+							inst_data.const_value = {};
+							inst_data.value_id = create_value_id();
+						}
+						// TODO: Fill dependencies plain
+					}
+				}
+
+				// Emit instructions
+				for (m_pos = baddr; m_pos >= start && m_pos < end && !m_ir->GetInsertBlock()->getTerminator(); m_pos += 4)
+				{
+					if (m_pos != baddr && m_block_info[m_pos / 4])
+					{
+						break;
+					}
+
+					const u32 op = std::bit_cast<be_t<u32>>(func.data[(m_pos - start) / 4]);
+
+					if (!op)
+					{
+						spu_log.error("[%s] Unexpected fallthrough to 0x%x (chunk=0x%x, entry=0x%x)", m_hash, m_pos, m_entry, m_function_queue[0]);
+						break;
+					}
+
+					// Set variable for set_link()
+					if (m_pos + 4 >= end)
+						m_next_op = 0;
+					else
+						m_next_op = func.data[(m_pos - start) / 4 + 1];
+
+					// Execute recompiler function (TODO)
+					(this->*decode(op))({op});
+				}
+
 				// Finalize block with fallthrough if necessary
 				if (!m_ir->GetInsertBlock()->getTerminator())
 				{
