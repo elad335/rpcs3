@@ -5587,12 +5587,12 @@ public:
 						}
 						case spu_itype::ILA:
 						{
-							inst_data.const_value = v128::from32p(op.i18) };
+							inst_data.const_value = v128::from32p(op.i18);
 							break;
 						}
 						case spu_itype::ILHU:
 						{
-							inst_data.const_value =  v128::from32p(op.i16 << 16) };
+							inst_data.const_value =  v128::from32p(op.i16 << 16);
 							break;
 						}
 						case spu_itype::ILH:
