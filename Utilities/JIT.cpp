@@ -1091,11 +1091,16 @@ struct MemoryManager1 : llvm::RTDyldMemoryManager
 
 	u8* allocateCodeSection(uptr size, uint align, uint /*sec_id*/, llvm::StringRef /*sec_name*/) override
 	{
+		jit_log.warning("Allocatings (size=0x%x, align=0x%x)", size, align);
+		logs::listener::sync_all();
+		llvm::install_fatal_error_handler(nullptr, nullptr);
 		return allocate(code_ptr, size, align, utils::protection::wx);
 	}
 
 	u8* allocateDataSection(uptr size, uint align, uint /*sec_id*/, llvm::StringRef /*sec_name*/, bool /*is_ro*/) override
 	{
+		jit_log.warning("Allocatingd (size=0x%x, align=0x%x)", size, align);
+		logs::listener::sync_all();
 		return allocate(data_ptr, size, align, utils::protection::rw);
 	}
 
@@ -1141,11 +1146,15 @@ struct MemoryManager2 : llvm::RTDyldMemoryManager
 
 	u8* allocateCodeSection(uptr size, uint align, uint /*sec_id*/, llvm::StringRef /*sec_name*/) override
 	{
+		jit_log.warning("Allocatings (size=0x%x, align=0x%x)", size, align);
+		logs::listener::sync_all();
 		return jit_runtime::alloc(size, align, true);
 	}
 
 	u8* allocateDataSection(uptr size, uint align, uint /*sec_id*/, llvm::StringRef /*sec_name*/, bool /*is_ro*/) override
 	{
+		jit_log.warning("Allocatingd (size=0x%x, align=0x%x)", size, align);
+		logs::listener::sync_all();
 		return jit_runtime::alloc(size, align, false);
 	}
 
