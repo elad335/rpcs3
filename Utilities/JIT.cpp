@@ -18,6 +18,10 @@
 
 LOG_CHANNEL(jit_log, "JIT");
 
+#ifdef LLVM_AVAILABLE
+#include "llvm/Support/ErrorHandling.h"
+#endif
+
 void jit_announce(uptr func, usz size, std::string_view name)
 {
 #ifdef __linux__
@@ -275,6 +279,15 @@ void jit_runtime::initialize()
 	std::memcpy(s_code_init.data(), alloc(0, 0, true), s_code_init.size());
 	s_data_init.resize(s_data_pos & 0xffff'ffff);
 	std::memcpy(s_data_init.data(), alloc(0, 0, false), s_data_init.size());
+
+#ifdef LLVM_AVAILABLE
+	llvm::install_fatal_error_handler([](void* /*user_data*/, const char *reason, bool /*gen_crash_dia*/) NEVER_INLINE
+	{
+		jit_log.fatal("LLVM fatal error: %s", reason);
+		logs::listener::sync_all();
+
+	}, const_cast<char*>("RPCS3 Handler"));
+#endif
 }
 
 void jit_runtime::finalize() noexcept
