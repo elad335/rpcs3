@@ -5862,7 +5862,7 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 		m_ir->CreateCondBr(
 			m_ir->CreateExtractValue(m_ir->CreateAtomicCmpXchg(rptr, rval, m_ir->CreateAdd(rval, m_ir->getInt64(128)), llvm::MaybeAlign{16}, llvm::AtomicOrdering::SequentiallyConsistent, llvm::AtomicOrdering::SequentiallyConsistent), 1)
 			, _next0
-			, _fail);
+			, g_cfg.core.spu_accurate_reservations ? _fail : _next0); // Succeed unconditionally
 
 		m_ir->SetInsertPoint(_next0);
 		call("atomic_wait_engine::notify_all", static_cast<void(*)(const void*)>(atomic_wait_engine::notify_all), rptr);
