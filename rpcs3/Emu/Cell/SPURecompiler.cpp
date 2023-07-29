@@ -1948,23 +1948,48 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point)
 
 	struct reg_state_t
 	{
-		bs_t<vf> flag;
-		u32 value;
-		u32 tag;
+		bs_t<vf> flag{};
+		u32 value{};
+		u32 tag = umax;
+		u32 known_ones{};
+		u32 known_zeroes{};
 
 		bool is_const() const
 		{
 			return !!(flag & vf::is_const);
 		}
 
-		bool operator==(reg_state_t r) const
+		bool is_less_than(u32 imm)
 		{
-			return flag == r.flag && (flag & vf::is_const ? value == r.value : tag == r.tag);
+			if (flag & vf::is_const && value < imm)
+			{
+				return true;
+			}
+
+			if (flag & vf::is_mask && ~known_zeroes < imm)
+			{
+				return true;
+			}
+
+			return false;
 		}
 
-		bool operator!=(reg_state_t r) const
+		bool operator==(const reg_state_t& r) const
+		{
+			return flag == r.flag && (flag & vf::is_const ? value == r.value : (tag == r.tag && known_ones == r.known_ones && known_zeroes == r.known_zeroes));
+		}
+
+		bool operator!=(const reg_state_t& r) const
 		{
 			return !(*this == r);
+		}
+
+		// Compare equality but try to ignore changes in unmasked bits
+		bool compare_with_mask_indifference(const reg_state_t& r, u32 mask_bits) const
+		{
+			return *this == r ||
+				(tag == r.tag && flag == r.flag && flag & vf::is_mask && !!(known_ones & ~r.known_ones & mask_bits) && !!(known_zeroes & ~r.known_zeroes & mask_bits)) ||
+				(flag == r.flag && flag & vf::is_const && ((value ^ r.value) & mask_bits) == 0);
 		}
 	};
 
@@ -2000,6 +2025,7 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point)
 		u32 put_pc; // PC of PUTLLC
 		bool lsa_write; // LSA written
 		reg_state_t ls; // state of LS load/store register
+		reg_state_t lsa; // state of LSA register on GETLLAR
 		bool ls_pc_rel; // For STQR/LQR
 		bool ls_access; // LS accessed
 		bool ls_write; // LS written
@@ -2021,6 +2047,11 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point)
 			if (!write)
 			{
 				ls_invalid = true;
+
+				if (ls_write)
+				{
+					discard();
+				}
 			}
 			else
 			{
@@ -2048,11 +2079,11 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point)
 
 	for (u32 wi = 0, wa = workload[0]; wi < workload.size();)
 	{
-		const auto break_putllc16 = [&](u32 c)
+		const auto break_putllc16 = [&](u32 cause)
 		{
 			if (atomic16.active)
 			{
-				spu_log.notice("PUTLLC pattern breakage (or half breakage) [%x, cause=%u]", wa - 4, c);
+				spu_log.notice("PUTLLC pattern breakage (or half breakage) [%x, cause=%u]", wa - 4, cause);
 			}
 		};
 
@@ -2148,6 +2179,47 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point)
 			}
 
 			vregs[reg] = {flag, value, rtag++};
+		};
+
+		const auto inherit_const_mask_value = [&](u32 reg, bs_t<vf> flag, u32 og_rtag, u32 value, u32 mask_ones, u32 mask_zeroes)
+		{
+			if (mask_ones | mask_zeroes)
+			{
+				if (flag & vf::is_const)
+				{
+					mask_ones = 0;
+					mask_zeroes = 0;
+				}
+				else
+				{
+					flag += vf::is_mask;
+				}
+			}
+
+			if (!flag && destroy_reg_state)
+			{
+				//vregs2[reg] = vregs[reg] = {{}, {}, rtag++};
+				return;
+			}
+
+			if (pos < cond_block_end)
+			{
+				vregs[reg] = {{}, {}, rtag++};
+				vregs2[reg] = {flag, value, (flag & vf::is_mask ? og_rtag : rtag++)};
+
+				vregs2[reg].known_ones &= ~mask_zeroes;
+				vregs2[reg].known_zeroes &= ~mask_ones;
+				vregs2[reg].known_ones |= mask_ones;
+				vregs2[reg].known_zeroes |= mask_zeroes;
+				return;
+			}
+
+			vregs[reg] = {flag, value, (flag & vf::is_mask ? og_rtag : rtag++)};
+
+			vregs[reg].known_ones &= ~mask_zeroes;
+			vregs[reg].known_zeroes &= ~mask_ones;
+			vregs[reg].known_ones |= mask_ones;
+			vregs[reg].known_zeroes |= mask_zeroes;
 		};
 
 		const auto unconst = [&](u32 reg)
@@ -2268,7 +2340,7 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point)
 				spu_log.error("[0x%x] Invalid interrupt flags (DE)", pos);
 			}
 
-			const auto [af, av, atag] = get_reg(op.ra);
+			const auto [af, av, atag, _3, _5] = get_reg(op.ra);
 			const bool sl = type == spu_itype::BISL || type == spu_itype::BISLED;
 
 			if (sl)
@@ -2678,27 +2750,15 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point)
 				m_regmod[pos / 4] = s_reg_mfc_lsa;
 
 				auto rt = get_reg(op.rt);
-				auto _lsa = get_reg(s_reg_mfc_lsa);
-				rt.value &= 0x3ffff;
+				inherit_const_mask_value(s_reg_mfc_lsa, rt.flag, rt.tag, rt.value & 0x3ffff, rt.known_ones & 0x3ffff, rt.known_zeroes | ~0x3ffff);
 
-				if (atomic16.active)
+				if (!atomic16.active)
 				{
-					if (rt.flag != _lsa.flag)
-					{
-						// Sad
-						break_putllc16(1);
-						atomic16.discard();
-					}
-					else if (rt.is_const() ? (_lsa.value / 128 != rt.value / 128) : (_lsa.tag != rt.tag))
-					{
-						break_putllc16(2);
-						atomic16.discard();
-					}
+					atomic16.discard();
+					atomic16.lsa_write = true;
+					atomic16.lsa_pc = pos;
 				}
 
-				get_reg(s_reg_mfc_lsa) = rt;
-				atomic16.lsa_write = true;
-				atomic16.lsa_pc = pos;
 				break;
 			}
 			case MFC_TagID:
@@ -2713,7 +2773,7 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point)
 			}
 			case MFC_Cmd:
 			{
-				const auto [af, av, atag] = get_reg(op.rt);
+				const auto [af, av, atagg, _3, _5] = get_reg(op.rt);
 				if (af)
 				{
 					switch (av)
@@ -2722,21 +2782,29 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point)
 					{
 						if (!atomic16.lsa_write)
 						{
+							atomic16.discard();
 							atomic16.lsa_pc = workload[wi]; // Start of the block: where we last had track of LSA value
 							atomic16.lsa_write = true;
 						}
 
 						atomic16.active = true;
+
+						auto lsa = get_reg(s_reg_mfc_lsa);
+						inherit_const_mask_value(s_reg_mfc_lsa, lsa.flag, lsa.tag, lsa.value & 0x3ff80, lsa.known_ones & 0x3ff80, lsa.known_zeroes | ~0x3ff80);
+						atomic16.lsa = get_reg(s_reg_mfc_lsa);
+
 						cond_block_end = 0;
 
 						g_fxo->get<putllc16_statistics_t>().all++;
-						spu_log.notice("[%x] GETLLAR pattern entry point", pos);
+						spu_log.notice("[0x%05x] GETLLAR pattern entry point", pos);
 						break;
 					}
 					case MFC_PUTLLC_CMD:
 					{
 						if (atomic16.active)
 						{
+							const auto _lsa = get_reg(s_reg_mfc_lsa);
+
 							if (atomic16.ls_access && atomic16.ls_write && !atomic16.ls_pc_rel && !atomic16.ls.is_const())
 							{
 								bool found = false;
@@ -2749,7 +2817,7 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point)
 										continue;
 									}
 
-									if (_reg.tag == atomic16.ls.tag)
+									if (_reg == atomic16.ls)
 									{
 										atomic16.reg = i;
 										found = true;
@@ -2760,6 +2828,41 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point)
 								if (!found)
 								{
 									break_putllc16(3);
+									atomic16.discard();
+									break;
+								}
+							}
+
+							if (atomic16.ls_access && atomic16.ls_write && !atomic16.lsa.compare_with_mask_indifference(_lsa, 0x3ff80))
+							{
+								// LSA latest value mismatches with the one writtwen with GETLLAR
+
+								if (atomic16.lsa.flag != _lsa.flag)
+								{
+									break_putllc16(1);
+								}
+								else
+								{
+									break_putllc16(2);
+								}
+
+								atomic16.discard();
+								break;
+							}
+
+							if (atomic16.ls_access && atomic16.ls_write)
+							{
+								if (atomic16.lsa.is_const() && atomic16.ls_offs >= (atomic16.lsa.value & -128) && atomic16.ls_offs < utils::align<u32>(atomic16.lsa.value + 1, 128) && atomic16.ls.is_less_than(128 - (atomic16.lsa.value & 127)))
+								{
+									// Ok
+								}
+								else if (!atomic16.lsa.is_const() && atomic16.lsa == atomic16.ls && atomic16.ls_offs < 0x80)
+								{
+									// Ok
+								}
+								else
+								{
+									break_putllc16(100);
 									atomic16.discard();
 									break;
 								}
@@ -2906,13 +3009,13 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point)
 						break_putllc16(8);
 						atomic16.set_invalid_ls(is_store);
 					}
-					else if (auto _lsa = get_reg(s_reg_mfc_lsa); _lsa.is_const() && add_res.value / 128 != _lsa.value / 128)
+					else if (auto _lsa = atomic16.lsa; _lsa.is_const() && add_res.value / 128 != _lsa.value / 128)
 					{
 						// Unrelated, ignore
 					}
 					else if (atomic16.ls_access && add_res != atomic16.ls)
 					{
-						if (atomic16.ls.is_const() && add_res.value / 128 != atomic16.ls.value / 128)
+						if (atomic16.ls.is_const() && ((add_res.value ^ atomic16.ls.value) & 0x3ff80))
 						{
 							// Ok
 						}
@@ -2947,13 +3050,13 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point)
 						break_putllc16(10);
 						atomic16.set_invalid_ls(is_store);
 					}
-					else if (auto _lsa = get_reg(s_reg_mfc_lsa); !_lsa.is_const() && _lsa.tag == state.tag && offs >= 0x80)
+					else if (auto _lsa = atomic16.lsa; !_lsa.is_const() && _lsa == state && offs >= 0x80)
 					{
 						// We already know it's an unrelated load/store
 					}
 					else if (atomic16.ls_access && atomic16.ls != state)
 					{
-						if (atomic16.ls.is_const() && state.value / 128 != atomic16.ls.value / 128)
+						if (atomic16.ls.is_const() && ((state.value ^ atomic16.ls.value) & 0x3ff80))
 						{
 							// Ok
 						}
@@ -2988,6 +3091,7 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point)
 				}
 				case 0:
 				{
+					// Unimplemnted
 					break_putllc16(13);
 					atomic16.set_invalid_ls(is_store);
 					break;
@@ -3030,7 +3134,7 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point)
 					break_putllc16(14);
 					atomic16.set_invalid_ls(is_store);
 				}
-				else if (auto _lsa = get_reg(s_reg_mfc_lsa); _lsa.is_const() && ca.value / 128 != _lsa.value / 128)
+				else if (auto _lsa = atomic16.lsa; _lsa.is_const() && ca.value / 128 != _lsa.value / 128)
 				{
 					// Unrelated, ignore
 				}
@@ -3140,7 +3244,7 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point)
 		case spu_itype::HBR:
 		{
 			hbr_loc = spu_branch_target(pos, op.roh << 7 | op.rt);
-			const auto [af, av, _1] = get_reg(op.ra);
+			const auto [af, av, _1, _3, _5] = get_reg(op.ra);
 			hbr_tg  = af && !op.c ? av & 0x3fffc : -1;
 			break;
 		}
@@ -3186,8 +3290,8 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point)
 		case spu_itype::IOHL:
 		{
 			m_regmod[pos / 4] = op.rt;
-			const auto [af, av, _1] = get_reg(op.rt);
-			inherit_const_value(op.rt, af, av | op.i16);
+			const auto [af, av, at, _3, _5] = get_reg(op.rt);
+			inherit_const_mask_value(op.rt, af, at, av | op.i16, op.i16, 0);
 			break;
 		}
 		case spu_itype::ORI:
@@ -3200,15 +3304,15 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point)
 				break;
 			}
 
-			const auto [af, av, _1] = get_reg(op.ra);
-			inherit_const_value(op.rt, af, av | op.si10);
+			const auto [af, av, at, aknown_ones, aknown_zeroes] = get_reg(op.ra);
+			inherit_const_mask_value(op.rt, af, at, av | op.si10, aknown_ones | op.si10, aknown_zeroes & ~op.si10);
 			break;
 		}
 		case spu_itype::OR:
 		{
 			m_regmod[pos / 4] = op.rt;
-			const auto [af, av, _] = get_reg(op.ra);
-			const auto [bf, bv, _2] = get_reg(op.rb);
+			const auto [af, av, _1, _3, _5] = get_reg(op.ra);
+			const auto [bf, bv, _2, _4, _6] = get_reg(op.rb);
 			inherit_const_value(op.rt, af & bf, bv | av);
 			break;
 		}
@@ -3222,7 +3326,7 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point)
 				break;
 			}
 
-			const auto [af, av, _1] = get_reg(op.ra);
+			const auto [af, av, _1, _3, _5] = get_reg(op.ra);
 			inherit_const_value(op.rt, af, av ^ op.si10);
 			break;
 		}
@@ -3236,31 +3340,31 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point)
 				break;
 			}
 
-			const auto [af, av, _] = get_reg(op.ra);
-			const auto [bf, bv, _2] = get_reg(op.rb);
+			const auto [af, av, _1, _3, _5] = get_reg(op.ra);
+			const auto [bf, bv, _2, _4, _6] = get_reg(op.rb);
 			inherit_const_value(op.rt, af & bf, bv ^ av);
 			break;
 		}
 		case spu_itype::NOR:
 		{
 			m_regmod[pos / 4] = op.rt;
-			const auto [af, av, _] = get_reg(op.ra);
-			const auto [bf, bv, _2] = get_reg(op.rb);
+			const auto [af, av, _1, _3, _5] = get_reg(op.ra);
+			const auto [bf, bv, _2, _4, _6] = get_reg(op.rb);
 			inherit_const_value(op.rt, af & bf, ~(bv | av));
 			break;
 		}
 		case spu_itype::ANDI:
 		{
 			m_regmod[pos / 4] = op.rt;
-			const auto [af, av, _1] = get_reg(op.ra);
-			inherit_const_value(op.rt, af, av & op.si10);
+			const auto [af, av, at, aknown_ones, aknown_zeroes] = get_reg(op.ra);
+			inherit_const_mask_value(op.rt, af, at, av | op.si10, aknown_ones & op.si10, aknown_zeroes | ~op.si10);
 			break;
 		}
 		case spu_itype::AND:
 		{
 			m_regmod[pos / 4] = op.rt;
-			const auto [af, av, _1] = get_reg(op.ra);
-			const auto [bf, bv, _2] = get_reg(op.rb);
+			const auto [af, av, _1, _3, _5] = get_reg(op.ra);
+			const auto [bf, bv, _2, _4, _6] = get_reg(op.rb);
 			inherit_const_value(op.rt, af & bf, bv & av);
 			break;
 		}
@@ -3274,30 +3378,30 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point)
 				break;
 			}
 
-			const auto [af, av, _1] = get_reg(op.ra);
+			const auto [af, av, _1, _3, _5] = get_reg(op.ra);
 			inherit_const_value(op.rt, af, av + op.si10);
 			break;
 		}
 		case spu_itype::A:
 		{
 			m_regmod[pos / 4] = op.rt;
-			const auto [af, av, _1] = get_reg(op.ra);
-			const auto [bf, bv, _2] = get_reg(op.rb);
+			const auto [af, av, _1, _3, _5] = get_reg(op.ra);
+			const auto [bf, bv, _2, _4, _6] = get_reg(op.rb);
 			inherit_const_value(op.rt, af & bf, bv + av);
 			break;
 		}
 		case spu_itype::SFI:
 		{
 			m_regmod[pos / 4] = op.rt;
-			const auto [af, av, _1] = get_reg(op.ra);
+			const auto [af, av, _1, _3, _5] = get_reg(op.ra);
 			inherit_const_value(op.rt, af, op.si10 - av);
 			break;
 		}
 		case spu_itype::SF:
 		{
 			m_regmod[pos / 4] = op.rt;
-			const auto [af, av, _1] = get_reg(op.ra);
-			const auto [bf, bv, _2] = get_reg(op.rb);
+			const auto [af, av, _1, _3, _5] = get_reg(op.ra);
+			const auto [bf, bv, _2, _4, _6] = get_reg(op.rb);
 			inherit_const_value(op.rt, af & bf, bv - av);
 			break;
 		}
@@ -3330,7 +3434,7 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point)
 				break;
 			}
 
-			const auto [af, av, _1] = get_reg(op.ra);
+			const auto [af, av, _1, _3, _5] = get_reg(op.ra);
 			inherit_const_value(op.rt, af, av >> ((0 - op.i7) & 0x1f));
 			break;
 		}
@@ -3350,7 +3454,7 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point)
 				break;
 			}
 
-			const auto [af, av, _1] = get_reg(op.ra);
+			const auto [af, av, _1, _3, _5] = get_reg(op.ra);
 			inherit_const_value(op.rt, af, av << (op.i7 & 0x1f));
 			break;
 		}
@@ -4645,7 +4749,7 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point)
 
 		if (!pattern.ls_write)
 		{
-			spu_log.notice("PUTLLC0 Pattern Detected! (put_pc=0x%x, %s) (putllc0=%d, putllc16=%d, all=%d)", pattern.put_pc, func_hash, ++stats.nowrite, ++stats.single, +stats.all);
+			spu_log.success("PUTLLC0 Pattern Detected! (put_pc=0x%x, %s) (putllc0=%d, putllc16+0=%d, all=%d)", pattern.put_pc, func_hash, ++stats.nowrite, ++stats.single, +stats.all);
 			result.add_pattern(spu_program::inst_attr::putllc0, pattern.put_pc - result.entry_point);
 			continue;
 		}
@@ -4665,7 +4769,7 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point)
 		value.reg = pattern.reg;
 		result.add_pattern<false>(spu_program::inst_attr::putllc16, pattern.put_pc - result.entry_point, value.data);
 
-		spu_log.notice("PUTLLC16 Pattern Detected! (put_pc=0x%x, is_pc_rel=%d, offset=0x%x, is_const=%d, %s) (putllc0=%d, putllc16=%d, all=%d)", pattern.put_pc, value.is_pc_rel, value.offs, value.is_const, func_hash, +stats.nowrite, ++stats.single, +stats.all);
+		spu_log.success("PUTLLC16 Pattern Detected! (put_pc=0x%x, is_pc_rel=%d, offset=0x%x, is_const=%d, %s) (putllc0=%d, putllc16+0=%d, all=%d)", pattern.put_pc, value.is_pc_rel, value.offs, value.is_const, func_hash, +stats.nowrite, ++stats.single, +stats.all);
 	}
 
 	if (result.data.empty())
@@ -5773,7 +5877,7 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 			bf_t<u32, 31, 1> is_const;
 			bf_t<u32, 30, 1> is_pc_rel;
 			bf_t<u32, 0, 8> reg;
-			bf_t<u32, 8, 16> offs;
+			bf_t<u32, 8, 18> offs;
 		} info;
 
 		const auto _next = llvm::BasicBlock::Create(m_context, "", m_function);
