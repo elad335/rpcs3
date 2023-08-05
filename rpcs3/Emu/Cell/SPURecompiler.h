@@ -328,7 +328,7 @@ private:
 	std::bitset<0x10000> m_bits;
 
 	// For private use
-	std::vector<u32> workload;
+	std::vector<struct workload_info> workload;
 
 public:
 	spu_recompiler_base();

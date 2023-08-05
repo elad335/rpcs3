@@ -1878,6 +1878,148 @@ void spu_recompiler_base::branch(spu_thread& spu, void*, u8* rip)
 	spu_runtime::g_tail_escape(&spu, func, rip);
 }
 
+// Value flags (TODO: only is_const is implemented)
+enum class vf : u32
+{
+	is_const,
+	is_mask,
+	is_rel,
+
+	__bitset_enum_max
+};
+
+struct reg_state_t
+{
+	bs_t<vf> flag{};
+	u32 value{};
+	u32 tag = umax;
+	u32 known_ones{};
+	u32 known_zeroes{};
+
+
+	bool is_const() const
+	{
+		return !!(flag & vf::is_const);
+	}
+
+	bool operator&(vf to_test) const
+	{
+		return this->flag.all_of(to_test);
+	}
+
+	bool is_less_than(u32 imm) const
+	{
+		if (flag & vf::is_const && value < imm)
+		{
+			return true;
+		}
+
+		if (flag & vf::is_mask && ~known_zeroes < imm)
+		{
+			return true;
+		}
+
+		return false;
+	}
+
+	bool operator==(const reg_state_t& r) const
+	{
+		return flag == r.flag && (flag & vf::is_const ? value == r.value : (tag == r.tag && known_ones == r.known_ones && known_zeroes == r.known_zeroes));
+	}
+
+	bool operator!=(const reg_state_t& r) const
+	{
+		return !(*this == r);
+	}
+
+	// Compare equality but try to ignore changes in unmasked bits
+	bool compare_with_mask_indifference(const reg_state_t& r, u32 mask_bits) const
+	{
+		return *this == r ||
+			(tag == r.tag && flag == r.flag && flag & vf::is_mask && !!(known_ones & ~r.known_ones & mask_bits) && !!(known_zeroes & ~r.known_zeroes & mask_bits)) ||
+			(flag == r.flag && flag & vf::is_const && ((value ^ r.value) & mask_bits) == 0);
+	}
+
+	reg_state_t merge(reg_state_t rhs)
+	{
+		if (rhs == *this)
+		{
+			// Perfect state: no conflicts
+			return rhs;
+		}
+
+		return make_unknown();
+	}
+
+	template <usz Count = 1>
+	static std::conditional_t<Count == 1, reg_state_t, std::array<reg_state_t, Count>> make_unknown() noexcept
+	{
+		if constexpr (Count == 1)
+		{
+			reg_state_t v{};
+			v.tag = alloc_tag();
+			return v;
+		}
+		else
+		{
+			std::array<reg_state_t, N> result{};
+
+			for (reg_state_t& state : result)
+			{
+				state = make_unknown<1>();
+			}
+
+			return result;
+		}
+	}
+
+	static reg_state_t from_value(u32 value)
+	{
+		reg_state_t v{};
+		v.value = value;
+		v.flag += vf::is_const;
+		return c;
+	}
+
+	static u32 alloc_tag(bool reset = false) noexcept
+	{
+		static thread_local u32 g_tls_tag = 0;
+
+		if (reset)
+		{
+			g_tls_tag = 0;
+		}
+
+		return ++g_tls_tag;
+	}
+
+private:
+	reg_state_t() = default;
+};
+
+template <usz N>
+static std::array<reg_state_t, N> operator+(const std::array<reg_state_t, N>& lhs, const std::array<reg_state_t, N>& rhs)
+{
+	std::array<reg_state_t, N> result{};
+
+	usz index = umax;
+
+	for (reg_state_t& state : result)
+	{
+		index++;
+
+		state = lhs[index].merge(rhs[index]);
+	}
+
+	return result;
+}
+
+struct spu_recompiler_base::workload_info
+{
+	u32 addr;
+
+};
+
 void spu_recompiler_base::old_interpreter(spu_thread& spu, void* ls, u8* /*rip*/)
 {
 	if (g_cfg.core.spu_decoder != spu_decoder_type::_static)
@@ -1935,63 +2077,6 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point)
 	m_bbs.clear();
 	m_chunks.clear();
 	m_funcs.clear();
-
-	// Value flags (TODO: only is_const is implemented)
-	enum class vf : u32
-	{
-		is_const,
-		is_mask,
-		is_rel,
-
-		__bitset_enum_max
-	};
-
-	struct reg_state_t
-	{
-		bs_t<vf> flag{};
-		u32 value{};
-		u32 tag = umax;
-		u32 known_ones{};
-		u32 known_zeroes{};
-
-		bool is_const() const
-		{
-			return !!(flag & vf::is_const);
-		}
-
-		bool is_less_than(u32 imm)
-		{
-			if (flag & vf::is_const && value < imm)
-			{
-				return true;
-			}
-
-			if (flag & vf::is_mask && ~known_zeroes < imm)
-			{
-				return true;
-			}
-
-			return false;
-		}
-
-		bool operator==(const reg_state_t& r) const
-		{
-			return flag == r.flag && (flag & vf::is_const ? value == r.value : (tag == r.tag && known_ones == r.known_ones && known_zeroes == r.known_zeroes));
-		}
-
-		bool operator!=(const reg_state_t& r) const
-		{
-			return !(*this == r);
-		}
-
-		// Compare equality but try to ignore changes in unmasked bits
-		bool compare_with_mask_indifference(const reg_state_t& r, u32 mask_bits) const
-		{
-			return *this == r ||
-				(tag == r.tag && flag == r.flag && flag & vf::is_mask && !!(known_ones & ~r.known_ones & mask_bits) && !!(known_zeroes & ~r.known_zeroes & mask_bits)) ||
-				(flag == r.flag && flag & vf::is_const && ((value ^ r.value) & mask_bits) == 0);
-		}
-	};
 
 	// Weak constant propagation context (for guessing branch targets)
 	std::array<reg_state_t, s_reg_max> vregs{}, vregs2{};
@@ -2110,7 +2195,24 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point)
 	{
 	}
 
-	for (u32 wi = 0, wa = workload[0]; wi < workload.size(); [&]()
+	struct workload_info
+	{
+		std::array<reg_state_t, s_reg_max> state;
+		bool is_resolved = false;
+	};
+
+	std::vector<u32, workload_info> 
+	for (u32 wi = 0, wa = workload[0]; [&]()
+	{
+		switch (stage)
+		{
+		case analysis_stage::block_search: return wi < workload.size();
+		case analysis_stage::value_seek: return wi < search_workload.size();
+		case analysis_stage::end: return false;
+		}
+
+		return false;
+	}(); [&]()
 	{
 		if (wi >= workload.size())
 		{
@@ -2123,7 +2225,7 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point)
 
 			wi = 0;
 		}
-	})
+	}())
 	{
 		const auto break_putllc16 = [&](u32 cause, bool broke)
 		{
