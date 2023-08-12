@@ -25,7 +25,7 @@ void game_list::create_header_actions(QList<QAction*>& actions, std::function<bo
 	{
 		QMenu* configure = new QMenu(this);
 		configure->addActions(actions);
-		configure->exec(horizontalHeader()->viewport()->mapToGlobal(pos));
+		configure->open(horizontalHeader()->viewport()->mapToGlobal(pos));
 	});
 
 	for (int col = 0; col < actions.count(); ++col)

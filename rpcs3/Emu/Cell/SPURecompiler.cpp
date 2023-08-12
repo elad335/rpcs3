@@ -1896,7 +1896,6 @@ struct reg_state_t
 	u32 known_ones{};
 	u32 known_zeroes{};
 
-
 	bool is_const() const
 	{
 		return !!(flag & vf::is_const);
@@ -3947,6 +3946,1570 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point)
 			{
 				nnop++;
 			}
+		}
+	}
+
+	std::map<u32, std::basic_string<u32>, value_hash<u32, 2>> s_targets(m_targets.begin(), m_targets.end());
+	std::map<u32, std::basic_string<u32>, value_hash<u32, 2>> s_preds(m_preds.begin(), m_preds.end());
+
+	auto find_block_start_using_end = [&s_targets, &s_preds](u32 addr) ->? umax
+	{
+		auto it = s_pred.upper_bound(addr);
+
+		if (it != s_pred.begin() && !s_pred.empty())
+		{
+			it--;
+
+			if (!it->second.empty())
+			{
+				return it->second.first;
+			}
+		}
+
+		return umax;
+	};
+
+	std::function<u32(u32, u32, std::vector<bool>&)> find_common_block_impl;
+	find_common_block_impl = [this, &find_common_block_impl, &find_block_start_using_end](u32 callee, u32 caller, std::vector<bool>& passed_through) mutable -> u32
+	{
+		const u32 callee_start = find_block_start_using_end(callee);
+		const u32 caller_start = find_block_start_using_end(caller);
+
+		if (callee_start == caller_start)
+		{
+			//return std::min<u32>(callee, caller);
+			return callee_start; // Use true block start for now
+		}
+
+		callee = callee_start;
+		caller = caller_start;
+
+		// Try the simple way first:
+
+		// Direct predeccessor of forward branch
+		if (auto it = s_preds.find(caller); it != s_preds.end())
+		{
+			if (it->second.size() == 1 && it->second[0] == callee)
+			{
+				return callee;
+			}
+		}
+
+		// Direct predeccessor of forward branch
+		if (auto it = s_preds.find(callee); it != s_preds.end())
+		{
+			if (it->second.size() == 2 && it->second.find_first_of(caller) != umax && it->second.find_first_of(callee - 4) != umax && 
+			{
+				return caller;
+			}
+		}
+
+		passed_through[entry_point / 4] = true;
+
+		std::basic_string<u32> preds_callee{callee};
+		std::basic_string<u32> preds_caller;
+
+		if (passed_through[])
+
+		for (auto pred = preds_callee.begin(); preds_callee.end(); pred++)
+		{
+			auto it = s_preds.find(callee);
+
+			if (it == s_preds.end())
+			{
+				if ()
+				for (u32 t : it->second)
+				{
+					t = find_block_start_using_end(callee);
+
+					if (!passed_through[t / 4])
+					{
+						passed_through[t / 4] = true;
+						preds_callee.insert(std::next(pred), t);
+					}
+				}
+
+				return umax;
+			}
+		}
+
+		for (auto& pred : it->second)
+		{
+			pred
+		}
+	};
+
+	auto find_common_block = [&find_common_block_impl, data = std::vector<bool>()](u32 callee, u32 caller) mutable -> u32
+	{
+		data.clear();
+		data.resize(SPU_LS_SIZE / 4);
+	};
+
+std::vector<u32, workload_info> 
+	for (u32 wi = 0, wa = workload[0]; [&]()
+	{
+		switch (stage)
+		{
+		case analysis_stage::block_search: return wi < workload.size();
+		case analysis_stage::value_seek: return wi < search_workload.size();
+		case analysis_stage::end: return false;
+		}
+
+		return false;
+	}(); [&]()
+	{
+		if (wi >= workload.size())
+		{
+			stage = analysis_stage{static_cast<u32>(stage) + 1};
+
+			if (stage >= analysis_stage::end)
+			{
+				return;
+			}
+
+			wi = 0;
+		}
+	}())
+	{
+		const auto break_putllc16 = [&](u32 cause, bool broke)
+		{
+			if (broke)
+			{
+				g_fxo->get<putllc16_statistics_t>().breaking_reason[cause]++;
+
+				spu_log.notice("PUTLLC pattern breakage [%x, cause=%u]", wa - 4, cause);
+
+				const auto values = g_fxo->get<putllc16_statistics_t>().get_reasons();
+
+				std::string tracing = "Most common breaking reasons:";
+
+				usz i = 0;
+				for (auto it = values.begin(); it != values.end() && i < 4; i++, it++)
+				{
+					fmt::append(tracing, " [cause=%d, n=%d]", it->first, it->second);
+				}
+
+				fmt::append(tracing, " of %d failures", g_fxo->get<putllc16_statistics_t>().all - g_fxo->get<putllc16_statistics_t>().single);
+				spu_log.notice("%s", tracing);
+			}
+		};
+
+		bool save_registers_for_
+		const auto next_block = [&](u32 successor)
+		{
+			std::array<reg_state_t, s_reg_max> vregs_save, vregs2_save{};
+
+			// Reset value information
+			break_putllc16(0, std::exchange(atomic16.active, false));
+			vregs.fill({});
+			vregs2.fill({});
+			sync = false;
+			hbr_loc = 0;
+			hbr_tg = -1;
+			cond_block_end = 0;
+			atomic16 = {};
+			wi++;
+
+			for (u32 i = 0; i < s_reg_max; i++)
+			{
+				// Register value tags
+				vregs[i].tag = vregs2[i].tag = rtag++;
+			}
+
+			while (wi < workload.size())
+			{
+				wa = workload[wi];
+
+				// Skip if LSB is set
+				if (wa & 1)
+				{
+					workload[wi] &= ~1;
+					wi++;
+					continue;
+				}
+
+				break;
+			}
+		};
+
+		const u32 pos = wa;
+
+		if (pos == cond_block_end)
+		{
+			cond_block_end = 0;
+		}
+
+		const auto get_reg = [&](u32 reg) -> reg_state_t&
+		{
+			if (pos < cond_block_end)
+			{
+				return vregs2[reg];
+			}
+
+			return vregs[reg];
+		};
+
+		const auto move_reg = [&](u32 dst, u32 src)
+		{
+			if (pos < cond_block_end && !destroy_reg_state)
+			{
+				if (dst != src && vregs2[src] != vregs[dst]) vregs[dst] = {{}, {}, rtag++};
+				vregs2[dst] = vregs2[src];
+				return;
+			}
+
+			vregs[dst] = vregs[src];
+		};
+
+		const auto set_const_value = [&](u32 reg, u32 value)
+		{
+			if (pos < cond_block_end)
+			{
+				vregs[reg] = {{}, {}, rtag++};
+				vregs2[reg] = {vf::is_const, value};
+				return;
+			}
+
+			vregs[reg] = {vf::is_const, value};
+		};
+
+		const auto inherit_const_value = [&](u32 reg, bs_t<vf> flag, u32 value)
+		{
+			if (!flag && destroy_reg_state)
+			{
+				//vregs2[reg] = vregs[reg] = {{}, {}, rtag++};
+				return;
+			}
+
+			if (pos < cond_block_end)
+			{
+				vregs2[reg] = {flag, value, rtag++};
+
+				if (vregs2[reg] != vregs[reg])
+				{
+					vregs[reg] = {{}, {}, rtag++};
+				}
+
+				return;
+			}
+
+			vregs[reg] = {flag, value, rtag++};
+		};
+
+		const auto inherit_const_mask_value = [&](u32 reg, bs_t<vf> flag, u32 og_rtag, u32 value, u32 mask_ones, u32 mask_zeroes)
+		{
+			if (mask_ones | mask_zeroes)
+			{
+				if (flag & vf::is_const)
+				{
+					mask_ones = 0;
+					mask_zeroes = 0;
+				}
+				else
+				{
+					flag += vf::is_mask;
+				}
+			}
+
+			if (!flag && destroy_reg_state)
+			{
+				//vregs2[reg] = vregs[reg] = {{}, {}, rtag++};
+				return;
+			}
+
+			if (pos < cond_block_end)
+			{
+				vregs[reg] = {{}, {}, rtag++};
+				vregs2[reg] = {flag, value, (flag & vf::is_mask ? og_rtag : rtag++)};
+
+				vregs2[reg].known_ones &= ~mask_zeroes;
+				vregs2[reg].known_zeroes &= ~mask_ones;
+				vregs2[reg].known_ones |= mask_ones;
+				vregs2[reg].known_zeroes |= mask_zeroes;
+				return;
+			}
+
+			vregs[reg] = {flag, value, (flag & vf::is_mask ? og_rtag : rtag++)};
+
+			vregs[reg].known_ones &= ~mask_zeroes;
+			vregs[reg].known_zeroes &= ~mask_ones;
+			vregs[reg].known_ones |= mask_ones;
+			vregs[reg].known_zeroes |= mask_zeroes;
+		};
+
+		const auto unconst = [&](u32 reg)
+		{
+			vregs[reg] = vregs2[reg] = {{}, {}, rtag++};
+		};
+
+		const auto add_block = [&](u32 target)
+		{
+			// Validate new target (TODO)
+			if (target >= lsa && (target & -4) < limit)
+			{
+				// Check for redundancy
+				if (!m_block_info[target / 4])
+				{
+					m_block_info[target / 4] = true;
+					workload.push_back(target);
+				}
+
+				// Add predecessor
+				if (m_preds[target & -4].find_first_of(pos) + 1 == 0)
+				{
+					m_preds[target & -4].push_back(pos);
+				}
+			}
+		};
+
+		if (pos < lsa || pos >= limit)
+		{
+			// Don't analyse if already beyond the limit
+			next_block();
+			continue;
+		}
+
+		const u32 data = ls[pos / 4];
+		const auto op = spu_opcode_t{data};
+
+		wa += 4;
+
+		m_targets.erase(pos);
+
+		// Fill register access info
+		if (auto iflags = g_spu_iflag.decode(data))
+		{
+			if (+iflags & +spu_iflag::use_ra)
+				m_use_ra[pos / 4] = op.ra;
+			if (+iflags & +spu_iflag::use_rb)
+				m_use_rb[pos / 4] = op.rb;
+			if (+iflags & +spu_iflag::use_rc)
+				m_use_rc[pos / 4] = op.rc;
+		}
+
+		// Analyse instruction
+		switch (const auto type = g_spu_itype.decode(data))
+		{
+		case spu_itype::UNK:
+		case spu_itype::DFCEQ:
+		case spu_itype::DFCMEQ:
+		case spu_itype::DFCGT:
+		case spu_itype::DFCMGT:
+		case spu_itype::DFTSV:
+		{
+			// Stop before invalid instructions (TODO)
+			next_block();
+			continue;
+		}
+
+		case spu_itype::SYNC:
+		case spu_itype::STOP:
+		case spu_itype::STOPD:
+		{
+			if (data == 0)
+			{
+				// Stop before null data
+				next_block();
+				continue;
+			}
+
+			if (g_cfg.core.spu_block_size == spu_block_size_type::safe)
+			{
+				// Stop on special instructions (TODO)
+				m_targets[pos];
+				next_block();
+				break;
+			}
+
+			if (type == spu_itype::SYNC)
+			{
+				// Remember
+				sync = true;
+			}
+
+			break;
+		}
+
+		case spu_itype::IRET:
+		{
+			if (op.d && op.e)
+			{
+				spu_log.error("[0x%x] Invalid interrupt flags (DE)", pos);
+			}
+
+			m_targets[pos];
+			next_block();
+			break;
+		}
+
+		case spu_itype::BI:
+		case spu_itype::BISL:
+		case spu_itype::BISLED:
+		case spu_itype::BIZ:
+		case spu_itype::BINZ:
+		case spu_itype::BIHZ:
+		case spu_itype::BIHNZ:
+		{
+			if (op.d && op.e)
+			{
+				spu_log.error("[0x%x] Invalid interrupt flags (DE)", pos);
+			}
+
+			const auto [af, av, atag, _3, _5] = get_reg(op.ra);
+			const bool sl = type == spu_itype::BISL || type == spu_itype::BISLED;
+
+			if (sl)
+			{
+				m_regmod[pos / 4] = op.rt;
+				set_const_value(op.rt, pos + 4);
+			}
+
+			if (af & vf::is_const)
+			{
+				const u32 target = spu_branch_target(av);
+
+				spu_log.warning("[0x%x] At 0x%x: indirect branch to 0x%x%s", entry_point, pos, target, op.d ? " (D)" : op.e ? " (E)" : "");
+
+				m_targets[pos].push_back(target);
+
+				if (g_cfg.core.spu_block_size == spu_block_size_type::giga)
+				{
+					if (sync)
+					{
+						spu_log.notice("[0x%x] At 0x%x: ignoring %scall to 0x%x (SYNC)", entry_point, pos, sl ? "" : "tail ", target);
+
+						if (target > entry_point)
+						{
+							limit = std::min<u32>(limit, target);
+						}
+					}
+					else
+					{
+						m_entry_info[target / 4] = true;
+						add_block(target);
+					}
+				}
+				else if (target > entry_point)
+				{
+					limit = std::min<u32>(limit, target);
+				}
+
+				if (sl && g_cfg.core.spu_block_size != spu_block_size_type::safe)
+				{
+					m_ret_info[pos / 4 + 1] = true;
+					m_entry_info[pos / 4 + 1] = true;
+					m_targets[pos].push_back(pos + 4);
+					add_block(pos + 4);
+				}
+			}
+			else if (type == spu_itype::BI && g_cfg.core.spu_block_size != spu_block_size_type::safe && !op.d && !op.e && !sync)
+			{
+				// Analyse jump table (TODO)
+				std::basic_string<u32> jt_abs;
+				std::basic_string<u32> jt_rel;
+				const u32 start = pos + 4;
+				u64 dabs = 0;
+				u64 drel = 0;
+
+				for (u32 i = start; i < limit; i += 4)
+				{
+					const u32 target = ls[i / 4];
+
+					if (target == 0 || target % 4)
+					{
+						// Address cannot be misaligned: abort
+						break;
+					}
+
+					if (target >= lsa && target < 0x40000)
+					{
+						// Possible jump table entry (absolute)
+						jt_abs.push_back(target);
+					}
+
+					if (target + start >= lsa && target + start < 0x40000)
+					{
+						// Possible jump table entry (relative)
+						jt_rel.push_back(target + start);
+					}
+
+					if (std::max(jt_abs.size(), jt_rel.size()) * 4 + start <= i)
+					{
+						// Neither type of jump table completes
+						jt_abs.clear();
+						jt_rel.clear();
+						break;
+					}
+				}
+
+				// Choose position after the jt as an anchor and compute the average distance
+				for (u32 target : jt_abs)
+				{
+					dabs += std::abs(static_cast<s32>(target - start - jt_abs.size() * 4));
+				}
+
+				for (u32 target : jt_rel)
+				{
+					drel += std::abs(static_cast<s32>(target - start - jt_rel.size() * 4));
+				}
+
+				// Add detected jump table blocks
+				if (jt_abs.size() >= 3 || jt_rel.size() >= 3)
+				{
+					if (jt_abs.size() == jt_rel.size())
+					{
+						if (dabs < drel)
+						{
+							jt_rel.clear();
+						}
+
+						if (dabs > drel)
+						{
+							jt_abs.clear();
+						}
+
+						ensure(jt_abs.size() != jt_rel.size());
+					}
+
+					if (jt_abs.size() >= jt_rel.size())
+					{
+						const u32 new_size = (start - lsa) / 4 + ::size32(jt_abs);
+
+						if (result.data.size() < new_size)
+						{
+							result.data.resize(new_size);
+							result.inst_attrs.resize(new_size);
+						}
+
+						for (u32 i = 0; i < jt_abs.size(); i++)
+						{
+							add_block(jt_abs[i]);
+							result.data[(start - lsa) / 4 + i] = std::bit_cast<u32, be_t<u32>>(jt_abs[i]);
+							m_targets[start + i * 4];
+						}
+
+						m_targets.emplace(pos, std::move(jt_abs));
+					}
+
+					if (jt_rel.size() >= jt_abs.size())
+					{
+						const u32 new_size = (start - lsa) / 4 + ::size32(jt_rel);
+
+						if (result.data.size() < new_size)
+						{
+							result.data.resize(new_size);
+							result.inst_attrs.resize(new_size);
+						}
+
+						for (u32 i = 0; i < jt_rel.size(); i++)
+						{
+							add_block(jt_rel[i]);
+							result.data[(start - lsa) / 4 + i] = std::bit_cast<u32, be_t<u32>>(jt_rel[i] - start);
+							m_targets[start + i * 4];
+						}
+
+						m_targets.emplace(pos, std::move(jt_rel));
+					}
+				}
+				else if (start + 12 * 4 < limit &&
+					ls[start / 4 + 0] == 0x1ce00408u &&
+					ls[start / 4 + 1] == 0x24000389u &&
+					ls[start / 4 + 2] == 0x24004809u &&
+					ls[start / 4 + 3] == 0x24008809u &&
+					ls[start / 4 + 4] == 0x2400c809u &&
+					ls[start / 4 + 5] == 0x24010809u &&
+					ls[start / 4 + 6] == 0x24014809u &&
+					ls[start / 4 + 7] == 0x24018809u &&
+					ls[start / 4 + 8] == 0x1c200807u &&
+					ls[start / 4 + 9] == 0x2401c809u)
+				{
+					spu_log.warning("[0x%x] Pattern 1 detected (hbr=0x%x:0x%x)", pos, hbr_loc, hbr_tg);
+
+					// Add 8 targets (TODO)
+					for (u32 addr = start + 4; addr < start + 36; addr += 4)
+					{
+						m_targets[pos].push_back(addr);
+						add_block(addr);
+					}
+				}
+				else if (hbr_loc > start && hbr_loc < limit && hbr_tg == start)
+				{
+					spu_log.warning("[0x%x] No patterns detected (hbr=0x%x:0x%x)", pos, hbr_loc, hbr_tg);
+				}
+			}
+			else if (type == spu_itype::BI && sync)
+			{
+				spu_log.notice("[0x%x] At 0x%x: ignoring indirect branch (SYNC)", entry_point, pos);
+			}
+
+			if (type == spu_itype::BI || sl)
+			{
+				if (type == spu_itype::BI || g_cfg.core.spu_block_size == spu_block_size_type::safe)
+				{
+					m_targets[pos];
+				}
+				else
+				{
+					m_ret_info[pos / 4 + 1] = true;
+					m_entry_info[pos / 4 + 1] = true;
+					m_targets[pos].push_back(pos + 4);
+					add_block(pos + 4);
+				}
+			}
+			else
+			{
+				m_targets[pos].push_back(pos + 4);
+				add_block(pos + 4);
+			}
+
+			next_block();
+			break;
+		}
+
+		case spu_itype::BRSL:
+		case spu_itype::BRASL:
+		{
+			const u32 target = spu_branch_target(type == spu_itype::BRASL ? 0 : pos, op.i16);
+
+			m_regmod[pos / 4] = op.rt;
+			set_const_value(op.rt, pos + 4);
+
+			if (type == spu_itype::BRSL && target == pos + 4)
+			{
+				// Get next instruction address idiom
+				break;
+			}
+
+			m_targets[pos].push_back(target);
+
+			if (g_cfg.core.spu_block_size != spu_block_size_type::safe)
+			{
+				m_ret_info[pos / 4 + 1] = true;
+				m_entry_info[pos / 4 + 1] = true;
+				m_targets[pos].push_back(pos + 4);
+				add_block(pos + 4);
+			}
+
+			if (g_cfg.core.spu_block_size == spu_block_size_type::giga && !sync)
+			{
+				m_entry_info[target / 4] = true;
+				add_block(target);
+			}
+			else
+			{
+				if (g_cfg.core.spu_block_size == spu_block_size_type::giga)
+				{
+					spu_log.notice("[0x%x] At 0x%x: ignoring fixed call to 0x%x (SYNC)", entry_point, pos, target);
+				}
+
+				if (target > entry_point)
+				{
+					limit = std::min<u32>(limit, target);
+				}
+			}
+
+			next_block();
+			break;
+		}
+
+		case spu_itype::BRA:
+		{
+			const u32 target = spu_branch_target(0, op.i16);
+
+			if (g_cfg.core.spu_block_size == spu_block_size_type::giga && !sync)
+			{
+				m_entry_info[target / 4] = true;
+				add_block(target);
+			}
+			else
+			{
+				if (g_cfg.core.spu_block_size == spu_block_size_type::giga)
+				{
+					spu_log.notice("[0x%x] At 0x%x: ignoring fixed tail call to 0x%x (SYNC)", entry_point, pos, target);
+				}
+
+				if (target > entry_point)
+				{
+					limit = std::min<u32>(limit, target);
+				}
+			}
+
+			next_block();
+			break;
+		}
+
+		case spu_itype::BR:
+		case spu_itype::BRZ:
+		case spu_itype::BRNZ:
+		case spu_itype::BRHZ:
+		case spu_itype::BRHNZ:
+		{
+			const u32 target = spu_branch_target(pos, op.i16);
+
+			if (target == pos + 4)
+			{
+				// Nop
+				break;
+			}
+
+			m_targets[pos].push_back(target);
+			add_block(target);
+
+			const bool avoid_omittion_of_info = atomic16.active && pos != target;
+
+			if (type == spu_itype::BR)
+			{
+				if (avoid_omittion_of_info && target > pos && pos + 4 == cond_block_end)
+				{
+					// IF-ELSE block: discard some registers again and continue
+					cond_block_end = target;
+					vregs2 = vregs;
+				}
+				else
+				{
+					next_block();
+				}
+			}
+			else
+			{
+				const bool was_end_of_back_branch = std::exchange(destroy_reg_state, false);
+
+				if (avoid_omittion_of_info && pos >= cond_block_end)
+				{
+					if (target > pos || (atomic16.lsa_pc <= target || (atomic16.ls_access && (atomic16.ls_pc_rel || atomic16.ls.is_const()))))
+					{
+						// We don't want to forget all the information that we have collected
+						// So continue with limited functionality.
+						cond_block_end = target >= pos ? target : UINT32_MAX;
+						vregs2 = vregs;
+					}
+					else if (atomic16.active && workload[wi] <= target)
+					{
+						bool ok = !was_end_of_back_branch;
+						for (u32 i = target; i < pos; i += 4)
+						{
+							if (g_spu_itype.decode(ls[i / 4]) & spu_itype::branch)
+							{
+								ok = false;
+								break;
+							}
+						}
+
+						if (ok)
+						{
+							// Suicidle walkthrough through instructions - kill registers state
+							destroy_reg_state = true;
+							wa = target;
+							cond_block_end = pos;
+						}
+						else
+						{
+							cond_block_end = 0;
+						}
+					}
+					else
+					{
+						cond_block_end = 0;
+					}
+				}
+				else
+				{
+					cond_block_end = 0;
+				}
+
+				m_targets[pos].push_back(pos + 4);
+				add_block(pos + 4 | u32{pos < cond_block_end});
+
+				if (!destroy_reg_state && !was_end_of_back_branch && pos >= cond_block_end)
+				{
+					next_block();
+				}
+			}
+
+			break;
+		}
+
+		case spu_itype::DSYNC:
+		case spu_itype::HEQ:
+		case spu_itype::HEQI:
+		case spu_itype::HGT:
+		case spu_itype::HGTI:
+		case spu_itype::HLGT:
+		case spu_itype::HLGTI:
+		case spu_itype::LNOP:
+		case spu_itype::NOP:
+		case spu_itype::MTSPR:
+		case spu_itype::FSCRWR:
+		{
+			// Do nothing
+			break;
+		}
+
+		case spu_itype::WRCH:
+		{
+			if (destroy_reg_state)
+			{
+				break;
+			}
+
+			switch (op.ra)
+			{
+			case MFC_EAL:
+			{
+				m_regmod[pos / 4] = s_reg_mfc_eal;
+				move_reg(s_reg_mfc_eal, op.rt);
+				break;
+			}
+			case MFC_LSA:
+			{
+				m_regmod[pos / 4] = s_reg_mfc_lsa;
+
+				auto rt = get_reg(op.rt);
+				inherit_const_mask_value(s_reg_mfc_lsa, rt.flag, rt.tag, rt.value & 0x3ffff, rt.known_ones & 0x3ffff, rt.known_zeroes | ~0x3ffff);
+
+				if (!atomic16.active)
+				{
+					atomic16.discard();
+					atomic16.lsa_write = true;
+					atomic16.lsa_pc = pos;
+				}
+
+				break;
+			}
+			case MFC_TagID:
+			{
+				m_regmod[pos / 4] = s_reg_mfc_tag;
+				break;
+			}
+			case MFC_Size:
+			{
+				m_regmod[pos / 4] = s_reg_mfc_size;
+				break;
+			}
+			case MFC_Cmd:
+			{
+				const auto [af, av, atagg, _3, _5] = get_reg(op.rt);
+				if (af)
+				{
+					switch (av)
+					{
+					case MFC_GETLLAR_CMD:
+					{
+						if (!atomic16.lsa_write)
+						{
+							atomic16.discard();
+							atomic16.lsa_pc = workload[wi]; // Start of the block: where we last had track of LSA value
+							atomic16.lsa_write = true;
+						}
+
+						atomic16.active = true;
+
+						auto lsa = get_reg(s_reg_mfc_lsa);
+						inherit_const_mask_value(s_reg_mfc_lsa, lsa.flag, lsa.tag, lsa.value & 0x3ff80, lsa.known_ones & 0x3ff80, lsa.known_zeroes | ~0x3ff80);
+						atomic16.lsa = get_reg(s_reg_mfc_lsa);
+
+						cond_block_end = 0;
+
+						g_fxo->get<putllc16_statistics_t>().all++;
+						spu_log.notice("[0x%05x] GETLLAR pattern entry point", pos);
+						break;
+					}
+					case MFC_PUTLLC_CMD:
+					{
+						if (atomic16.active)
+						{
+							const auto _lsa = get_reg(s_reg_mfc_lsa);
+
+							if (atomic16.ls_access && atomic16.ls_write && !atomic16.ls_pc_rel && !atomic16.ls.is_const())
+							{
+								bool found = false;
+								for (u32 i = 0; i < s_reg_max; i++)
+								{
+									const auto& _reg = (pos < cond_block_end ? vregs2[i] : vregs[i]);
+
+									if (_reg.is_const())
+									{
+										continue;
+									}
+
+									if (_reg == atomic16.ls)
+									{
+										atomic16.reg = i;
+										found = true;
+										break;
+									}
+								}
+
+								if (!found)
+								{
+									break_putllc16(3, atomic16.discard());
+									break;
+								}
+							}
+
+							if (atomic16.ls_access && atomic16.ls_write && !atomic16.lsa.compare_with_mask_indifference(_lsa, 0x3ff80))
+							{
+								// LSA latest value mismatches with the one writtwen with GETLLAR
+
+								if (atomic16.lsa.flag != _lsa.flag)
+								{
+									break_putllc16(1, atomic16.discard());
+								}
+								else
+								{
+									break_putllc16(2, atomic16.discard());
+								}
+
+								break;
+							}
+
+							if (atomic16.ls_access && atomic16.ls_write)
+							{
+								bool ok = false;
+
+								if (atomic16.ls_pc_rel)
+								{
+									//
+								}
+								else if (atomic16.lsa.is_const())
+								{
+									if (atomic16.ls.is_const())
+									{
+										if (atomic16.ls_offs)
+										{
+											// Rebase constant so we can get rid of ls_offs
+											atomic16.ls.value = spu_ls_target(atomic16.ls_offs + atomic16.ls.value);
+											atomic16.ls_offs = 0;
+										}
+
+										if (atomic16.ls.value >= (atomic16.lsa.value & -128) && atomic16.ls.value < utils::align<u32>(atomic16.lsa.value + 1, 128))
+										{
+											ok = true;
+										}
+									}
+									else if (atomic16.ls_offs >= (atomic16.lsa.value & -128) && atomic16.ls_offs < utils::align<u32>(atomic16.lsa.value + 1, 128) && atomic16.ls.is_less_than(128 - (atomic16.lsa.value & 127)))
+									{
+										ok = true;
+									}
+								}
+								else if (!atomic16.lsa.is_const() && atomic16.lsa == atomic16.ls && atomic16.ls_offs < 0x80)
+								{
+									// Unknown value with known offset of less than 128 bytes
+									ok = true;
+								}
+
+								if (!ok)
+								{
+									// This is quite common.. let's try to select between putllc16 and putllc0 at runtime!
+									// break_putllc16(100);
+									// atomic16.discard();
+									// break;
+									atomic16.select_16_or_0_at_runtime = true;
+								}
+							}
+
+							atomic16.put_pc = pos;
+							atomic16_all.emplace_back(atomic16);
+							atomic16.discard();
+						}
+
+						break;
+					}
+					default:
+					{
+						break_putllc16(4, atomic16.discard());
+						break;
+					}
+					}
+				}
+				else
+				{
+					break_putllc16(5, atomic16.discard());
+				}
+
+				m_use_rb[pos / 4] = s_reg_mfc_eal;
+				break;
+			}
+			case MFC_EAH:
+			case SPU_WrDec:
+			case SPU_WrSRR0:
+			case SPU_WrEventAck:
+				break;
+			default:
+			{
+				break_putllc16(6, atomic16.discard());
+				break;
+			}
+			}
+
+			break;
+		}
+
+		case spu_itype::STQR:
+		case spu_itype::LQR:
+		{
+			if (destroy_reg_state)
+			{
+				break;
+			}
+
+			const bool is_store = type == spu_itype::STQR;
+
+			if (atomic16.active)
+			{
+				const u32 offs = spu_branch_target(pos, op.i16);
+
+				if (atomic16.ls_invalid && is_store)
+				{
+					break_putllc16(20, atomic16.set_invalid_ls(is_store));
+				}
+				else if (atomic16.ls_access && !atomic16.ls_pc_rel)
+				{
+					break_putllc16(7, atomic16.set_invalid_ls(is_store));
+				}
+				else if (atomic16.ls_access && offs != atomic16.ls_offs)
+				{
+					if ((offs ^ atomic16.ls_offs) & 0x3ff80)
+					{
+						atomic16.ls_write |= is_store;
+					}
+					else
+					{
+						// Sad
+						break_putllc16(8, atomic16.set_invalid_ls(is_store));
+					}
+				}
+				else
+				{
+					atomic16.ls = {};
+					atomic16.ls_offs = offs;
+					atomic16.ls_pc_rel = true;
+					atomic16.ls_write |= is_store;
+					atomic16.ls_access = true;
+				}
+			}
+
+			if (is_store)
+			{
+				break;
+			}
+
+			// Unconst
+			m_regmod[pos / 4] = op.rt;
+			unconst(op.rt);
+			break;
+		}
+
+		case spu_itype::STQX:
+		case spu_itype::LQX:
+		{
+			if (destroy_reg_state)
+			{
+				break;
+			}
+
+			const bool is_store = type == spu_itype::STQX;
+
+			if (atomic16.active && !destroy_reg_state)
+			{
+				auto ra = get_reg(op.ra);
+				ra.value &= 0x3ffff;
+				auto rb = get_reg(op.rb);
+				rb.value &= 0x3ffff;
+
+				const u32 offs = ra.is_const() ? ra.value :
+					rb.is_const() ? rb.value : 0;
+
+				auto add_res = ra;
+				add_res.value += (rb.is_const() ? rb.value : 0);
+				add_res.value &= 0x3fff0;
+				add_res.flag &= rb.flag;
+				add_res.tag = ra.is_const() ? rb.tag :
+					rb.is_const() ? ra.tag : 0;
+
+				const u32 const_flags = u32{ra.is_const()} + u32{rb.is_const()};
+
+				switch (const_flags)
+				{
+				case 2:
+				{
+					if (atomic16.ls_invalid && is_store)
+					{
+						break_putllc16(20, atomic16.set_invalid_ls(is_store));
+					}
+					else if (atomic16.ls_access && atomic16.ls_pc_rel)
+					{
+						break_putllc16(8, atomic16.set_invalid_ls(is_store));
+					}
+					else if (auto _lsa = atomic16.lsa; _lsa.is_const() && ((add_res.value ^ _lsa.value) & 0x3ff80))
+					{
+						// Unrelated, ignore
+					}
+					else if (atomic16.ls_access && add_res != atomic16.ls)
+					{
+						if (atomic16.ls.is_const() && ((add_res.value ^ atomic16.ls.value) & 0x3ff80))
+						{
+							// Ok
+						}
+						else
+						{
+							// Sad
+							break_putllc16(9, atomic16.set_invalid_ls(is_store));
+						}
+					}
+					else
+					{
+						atomic16.ls = {vf::is_const, add_res.value};
+						atomic16.ls_offs = 0;
+						atomic16.ls_write |= is_store;
+						atomic16.ls_access = true;
+					}
+
+					break;
+				}
+				case 1:
+				{
+					const auto& state = ra.is_const() ? rb : ra;
+
+					if (atomic16.ls_invalid && is_store)
+					{
+						break_putllc16(23, atomic16.set_invalid_ls(is_store));
+					}
+					else if (atomic16.ls_access && atomic16.ls_pc_rel)
+					{
+						break_putllc16(20, atomic16.set_invalid_ls(is_store));
+					}
+					else if (auto _lsa = atomic16.lsa; !_lsa.is_const() && _lsa == state && offs >= 0x80)
+					{
+						// We already know it's an unrelated load/store
+					}
+					else if (atomic16.ls_access && atomic16.ls != state)
+					{
+						if (atomic16.ls.is_const() && ((state.value ^ atomic16.ls.value) & 0x3ff80))
+						{
+							// Ok
+						}
+						else
+						{
+							// Sad
+							break_putllc16(11, atomic16.set_invalid_ls(is_store));
+						}
+					}
+					else if (atomic16.ls_access && !atomic16.ls.is_const())
+					{
+						if (offs / 16 == atomic16.ls_offs / 16 && offs % 16 == 0)
+						{
+							atomic16.ls_write |= is_store;
+						}
+						else
+						{
+							break_putllc16(12, atomic16.set_invalid_ls(is_store));
+						}
+					}
+					else
+					{
+						atomic16.ls = state;
+						atomic16.ls_offs = offs;
+						atomic16.ls_write |= is_store;
+						atomic16.ls_access = true;
+					}
+
+					break;
+				}
+				case 0:
+				{
+					// Unimplemnted
+					break_putllc16(13, atomic16.set_invalid_ls(is_store));
+					break;
+				}
+				default: fmt::throw_exception("Unreachable!");
+				}
+			}
+
+			if (is_store)
+			{
+				break;
+			}
+
+			// Unconst
+			m_regmod[pos / 4] = op.rt;
+			unconst(op.rt);
+			break;
+		}
+		case spu_itype::STQA:
+		case spu_itype::LQA:
+		{
+			if (destroy_reg_state)
+			{
+				break;
+			}
+
+			const bool is_store = type == spu_itype::STQA;
+
+			if (atomic16.active)
+			{
+				const reg_state_t ca = {vf::is_const, spu_ls_target(0, op.si16)};
+
+				if (atomic16.ls_invalid && is_store)
+				{
+					break_putllc16(20, atomic16.set_invalid_ls(is_store));
+				}
+				else if (atomic16.ls_access && atomic16.ls_pc_rel)
+				{
+					break_putllc16(14, atomic16.set_invalid_ls(is_store));
+				}
+				else if (auto _lsa = atomic16.lsa; _lsa.is_const() && ((ca.value ^ _lsa.value) & 0x3ff80))
+				{
+					// Unrelated, ignore
+				}
+				else if (atomic16.ls_access && ca != atomic16.ls)
+				{
+					if (atomic16.ls.is_const() && ((ca.value ^ atomic16.ls.value) & 0x3ff80))
+					{
+						// Ok
+					}
+					else
+					{
+						// Sad
+						break_putllc16(15, atomic16.set_invalid_ls(is_store));
+					}
+				}
+				else
+				{
+					atomic16.ls = ca;
+					atomic16.ls_offs = 0;
+					atomic16.ls_write |= is_store;
+					atomic16.ls_access = true;
+				}
+			}
+
+			if (is_store)
+			{
+				break;
+			}
+
+			// Unconst
+			m_regmod[pos / 4] = op.rt;
+			unconst(op.rt);
+			break;
+		}
+
+		case spu_itype::STQD:
+		case spu_itype::LQD:
+		{
+			const bool is_store = type == spu_itype::STQD;
+
+			if (atomic16.active && !destroy_reg_state)
+			{
+				auto ra = get_reg(op.ra);
+				auto _lsa = atomic16.lsa;
+
+				ra.value = spu_ls_target(ra.value, op.si10 * 4);
+				const u32 offs = ra.is_const() ? 0 : spu_ls_target(0, op.si10 * 4);
+				const u32 const_flags = u32{ra.is_const()} + u32{atomic16.ls.is_const()};
+				const u32 const_lsa_flags = u32{ra.is_const()} + u32{_lsa.is_const()};
+
+				if (op.si10)
+				{
+					ra.known_zeroes = 0;
+					ra.known_ones = 0;
+				}
+
+				if (atomic16.ls_access && atomic16.ls_pc_rel)
+				{
+					break_putllc16(16, atomic16.set_invalid_ls(is_store));
+				}
+				else if ((const_lsa_flags == 2 && ((ra.value ^ _lsa.value) & 0x3ff80)) ||
+					(const_lsa_flags == 0 && _lsa == ra && offs >= 0x80))
+				{
+					// We already know it's an unrelated load/store
+				}
+				else if (atomic16.ls_access && atomic16.ls != ra)
+				{
+					if (const_flags == 2 && ((ra.value ^ atomic16.ls.value) & 0x3ff80))
+					{
+						// Ok
+					}
+					else
+					{
+						// Sad
+						break_putllc16(17, atomic16.set_invalid_ls(is_store));
+					}
+				}
+				else if (atomic16.ls_access && const_flags == 0)
+				{
+					if (offs / 16 == atomic16.ls_offs / 16)
+					{
+						atomic16.ls_write |= is_store;
+					}
+					else
+					{
+						break_putllc16(18, atomic16.set_invalid_ls(is_store));
+					}
+				}
+				else
+				{
+					atomic16.ls = ra;
+					atomic16.ls_offs = offs;
+					atomic16.ls_write |= is_store;
+					atomic16.ls_access = true;
+				}
+			}
+
+			if (type == spu_itype::STQD)
+			{
+				break;
+			}
+
+			// Unconst
+			m_regmod[pos / 4] = op.rt;
+			unconst(op.rt);
+			break;
+		}
+
+		case spu_itype::HBR:
+		{
+			hbr_loc = spu_branch_target(pos, op.roh << 7 | op.rt);
+			const auto [af, av, _1, _3, _5] = get_reg(op.ra);
+			hbr_tg  = af && !op.c ? av & 0x3fffc : -1;
+			break;
+		}
+
+		case spu_itype::HBRA:
+		{
+			hbr_loc = spu_branch_target(pos, op.r0h << 7 | op.rt);
+			hbr_tg  = spu_branch_target(0x0, op.i16);
+			break;
+		}
+
+		case spu_itype::HBRR:
+		{
+			hbr_loc = spu_branch_target(pos, op.r0h << 7 | op.rt);
+			hbr_tg  = spu_branch_target(pos, op.i16);
+			break;
+		}
+
+		case spu_itype::IL:
+		{
+			m_regmod[pos / 4] = op.rt;
+			set_const_value(op.rt, op.si16);
+			break;
+		}
+		case spu_itype::ILA:
+		{
+			m_regmod[pos / 4] = op.rt;
+			set_const_value(op.rt, op.i18);
+			break;
+		}
+		case spu_itype::ILH:
+		{
+			m_regmod[pos / 4] = op.rt;
+			set_const_value(op.rt, op.i16 << 16 | op.i16);
+			break;
+		}
+		case spu_itype::ILHU:
+		{
+			m_regmod[pos / 4] = op.rt;
+			set_const_value(op.rt, op.i16 << 16);
+			break;
+		}
+		case spu_itype::IOHL:
+		{
+			m_regmod[pos / 4] = op.rt;
+			const auto [af, av, at, _3, _5] = get_reg(op.rt);
+			inherit_const_mask_value(op.rt, af, at, av | op.i16, op.i16, 0);
+			break;
+		}
+		case spu_itype::ORI:
+		{
+			m_regmod[pos / 4] = op.rt;
+
+			if (!op.si10)
+			{
+				move_reg(op.rt, op.ra);
+				break;
+			}
+
+			const auto [af, av, at, aknown_ones, aknown_zeroes] = get_reg(op.ra);
+			inherit_const_mask_value(op.rt, af, at, av | op.si10, aknown_ones | op.si10, aknown_zeroes & ~op.si10);
+			break;
+		}
+		case spu_itype::OR:
+		{
+			m_regmod[pos / 4] = op.rt;
+			const auto [af, av, _1, _3, _5] = get_reg(op.ra);
+			const auto [bf, bv, _2, _4, _6] = get_reg(op.rb);
+			inherit_const_value(op.rt, af & bf, bv | av);
+			break;
+		}
+		case spu_itype::XORI:
+		{
+			m_regmod[pos / 4] = op.rt;
+
+			if (!op.si10)
+			{
+				move_reg(op.rt, op.ra);
+				break;
+			}
+
+			const auto [af, av, _1, _3, _5] = get_reg(op.ra);
+			inherit_const_value(op.rt, af, av ^ op.si10);
+			break;
+		}
+		case spu_itype::XOR:
+		{
+			m_regmod[pos / 4] = op.rt;
+
+			if (op.ra == op.rb)
+			{
+				set_const_value(op.rt, 0);
+				break;
+			}
+
+			const auto [af, av, _1, _3, _5] = get_reg(op.ra);
+			const auto [bf, bv, _2, _4, _6] = get_reg(op.rb);
+			inherit_const_value(op.rt, af & bf, bv ^ av);
+			break;
+		}
+		case spu_itype::NOR:
+		{
+			m_regmod[pos / 4] = op.rt;
+			const auto [af, av, _1, _3, _5] = get_reg(op.ra);
+			const auto [bf, bv, _2, _4, _6] = get_reg(op.rb);
+			inherit_const_value(op.rt, af & bf, ~(bv | av));
+			break;
+		}
+		case spu_itype::ANDI:
+		{
+			m_regmod[pos / 4] = op.rt;
+			const auto [af, av, at, aknown_ones, aknown_zeroes] = get_reg(op.ra);
+			inherit_const_mask_value(op.rt, af, at, av | op.si10, aknown_ones & op.si10, aknown_zeroes | ~op.si10);
+			break;
+		}
+		case spu_itype::AND:
+		{
+			m_regmod[pos / 4] = op.rt;
+			const auto [af, av, _1, _3, _5] = get_reg(op.ra);
+			const auto [bf, bv, _2, _4, _6] = get_reg(op.rb);
+			inherit_const_value(op.rt, af & bf, bv & av);
+			break;
+		}
+		case spu_itype::AI:
+		{
+			m_regmod[pos / 4] = op.rt;
+
+			if (!op.si10)
+			{
+				move_reg(op.rt, op.ra);
+				break;
+			}
+
+			const auto [af, av, _1, _3, _5] = get_reg(op.ra);
+			inherit_const_value(op.rt, af, av + op.si10);
+			break;
+		}
+		case spu_itype::A:
+		{
+			m_regmod[pos / 4] = op.rt;
+			const auto [af, av, _1, _3, _5] = get_reg(op.ra);
+			const auto [bf, bv, _2, _4, _6] = get_reg(op.rb);
+			inherit_const_value(op.rt, af & bf, bv + av);
+			break;
+		}
+		case spu_itype::SFI:
+		{
+			m_regmod[pos / 4] = op.rt;
+			const auto [af, av, _1, _3, _5] = get_reg(op.ra);
+			inherit_const_value(op.rt, af, op.si10 - av);
+			break;
+		}
+		case spu_itype::SF:
+		{
+			m_regmod[pos / 4] = op.rt;
+			const auto [af, av, _1, _3, _5] = get_reg(op.ra);
+			const auto [bf, bv, _2, _4, _6] = get_reg(op.rb);
+			inherit_const_value(op.rt, af & bf, bv - av);
+			break;
+		}
+		case spu_itype::FSMBI:
+		{
+			m_regmod[pos / 4] = op.rt;
+			const u32 mask = (op.i16 >> 12);
+
+			const u32 value = (mask & 1 ? 0xff : 0) |
+				(mask & 2 ? 0xff00 : 0) |
+				(mask & 4 ? 0xff0000 : 0) |
+				(mask & 8 ? 0xff000000u : 0);
+
+			set_const_value(op.rt, value);
+			break;
+		}
+		case spu_itype::ROTMI:
+		{
+			m_regmod[pos / 4] = op.rt;
+
+			if ((0 - op.i7) & 0x20)
+			{
+				set_const_value(op.rt, 0);
+				break;
+			}
+
+			if (!op.i7)
+			{
+				move_reg(op.rt, op.ra);
+				break;
+			}
+
+			const auto [af, av, _1, _3, _5] = get_reg(op.ra);
+			inherit_const_value(op.rt, af, av >> ((0 - op.i7) & 0x1f));
+			break;
+		}
+		case spu_itype::SHLI:
+		{
+			m_regmod[pos / 4] = op.rt;
+
+			if (op.i7 & 0x20)
+			{
+				set_const_value(op.rt, 0);
+				break;
+			}
+
+			if (!op.i7)
+			{
+				move_reg(op.rt, op.ra);
+				break;
+			}
+
+			const auto [af, av, _1, _3, _5] = get_reg(op.ra);
+			inherit_const_value(op.rt, af, av << (op.i7 & 0x1f));
+			break;
+		}
+		case spu_itype::SHLQBYI:
+		{
+			m_regmod[pos / 4] = op.rt;
+
+			if (op.i7 & 0x10)
+			{
+				set_const_value(op.rt, 0);
+				break;
+			}
+
+			if (!op.i7)
+			{
+				move_reg(op.rt, op.ra);
+				break;
+			}
+
+			[[fallthrough]];
+		}
+		default:
+		{
+			// Unconst
+			const u32 op_rt = type & spu_itype::_quadrop ? +op.rt4 : +op.rt;
+			m_regmod[pos / 4] = op_rt;
+			unconst(op_rt);
+			break;
+		}
 		}
 	}
 
