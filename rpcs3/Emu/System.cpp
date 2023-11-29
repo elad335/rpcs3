@@ -3067,6 +3067,25 @@ void Emulator::Kill(bool allow_autoexit, bool savestate)
 			m_state = system_state::stopped;
 			GetCallbacks().on_stop();
 
+			if (g_tty)
+			{
+				// Write merged TTY output after emulation has been safely stopped\
+
+				if (usz attempted_read_size = utils::sub_saturate<usz>(g_tty.pos(), m_tty_file_init_pos))
+				{
+					// Enfore an arbitrary limit for now to avoid OOM in case the guest code has bombarded TTY
+					// 16MB, this should be enough
+					constexpr usz c_max_tty_spill_size = 0x10'0000;
+
+					std::string tty_buffer(std::min<usz>(attempted_read_size, c_max_tty_spill_size), '\0');
+					g_tty.seek(m_tty_file_init_pos);
+					tty_buffer.resize(g_tty.read_at(m_tty_file_init_pos, tty_buffer.data(), tty_buffer.size()));
+
+					// Mark start and end very clearly with RPCS3 put in it
+					sys_log.notice("Accumulated RPCS3 TTY:\n\n\n%s\n\n\nEnd RPCS3 TTY Section.", tty_buffer);
+				}
+			}
+
 			// Always Enable display sleep, not only if it was prevented.
 			enable_display_sleep();
 
