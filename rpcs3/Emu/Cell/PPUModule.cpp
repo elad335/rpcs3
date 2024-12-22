@@ -2028,7 +2028,7 @@ void ppu_unload_prx(const lv2_prx& prx)
 	}
 }
 
-bool ppu_load_exec(const ppu_exec_object& elf, bool virtual_load, const std::string& elf_path, utils::serial* ar)
+bool ppu_load_exec(fxo_t& local_fxo, const ppu_exec_object& elf, bool virtual_load, const std::string& elf_path, utils::serial* ar)
 {
 	if (elf != elf_error::ok)
 	{
@@ -2054,10 +2054,10 @@ bool ppu_load_exec(const ppu_exec_object& elf, bool virtual_load, const std::str
 	init_ppu_functions(ar, false);
 
 	// Set for delayed initialization in ppu_initialize()
-	auto& _main = g_fxo->get<main_ppu_module>();
+	auto& _main = local_fxo.get<main_ppu_module>();
 
 	// Access linkage information object
-	auto& link = g_fxo->get<ppu_linkage_info>();
+	auto& link = local_fxo.get<ppu_linkage_info>();
 
 	// TLS information
 	u32 tls_vaddr = 0;
@@ -2241,16 +2241,19 @@ bool ppu_load_exec(const ppu_exec_object& elf, bool virtual_load, const std::str
 		hash[5 + i * 2] = pal[_main.sha1[i] & 15];
 	}
 
-	Emu.SetExecutableHash(hash);
+	if (!virtual_load)
+	{
+		Emu.SetExecutableHash(hash);
+	}
 
 	// Apply the patch
 	std::vector<u32> applied;
-	g_fxo->get<patch_engine>().apply(applied, !ar ? hash : std::string{}, [&](u32 addr, u32 size) { return _main.get_ptr<u8>(addr, size);  });
+	local_fxo.get<patch_engine>().apply(applied, !ar ? hash : std::string{}, [&](u32 addr, u32 size) { return _main.get_ptr<u8>(addr, size);  });
 
 	if (!ar && !Emu.GetTitleID().empty())
 	{
 		// Alternative patch
-		g_fxo->get<patch_engine>().apply(applied, Emu.GetTitleID() + '-' + hash, [&](u32 addr, u32 size) { return _main.get_ptr<u8>(addr, size); });
+		local_fxo.get<patch_engine>().apply(applied, Emu.GetTitleID() + '-' + hash, [&](u32 addr, u32 size) { return _main.get_ptr<u8>(addr, size); });
 	}
 
 	if (!applied.empty() || ar)
@@ -2778,7 +2781,7 @@ bool ppu_load_exec(const ppu_exec_object& elf, bool virtual_load, const std::str
 	return true;
 }
 
-std::pair<std::shared_ptr<lv2_overlay>, CellError> ppu_load_overlay(const ppu_exec_object& elf, bool virtual_load, const std::string& path, s64 file_offset, utils::serial* ar)
+std::pair<std::shared_ptr<lv2_overlay>, CellError> ppu_load_overlay(fxo_t& local_fxo, const ppu_exec_object& elf, bool virtual_load, const std::string& path, s64 file_offset, utils::serial* ar)
 {
 	if (elf != elf_error::ok)
 	{
@@ -2786,7 +2789,7 @@ std::pair<std::shared_ptr<lv2_overlay>, CellError> ppu_load_overlay(const ppu_ex
 	}
 
 	// Access linkage information object
-	auto& link = g_fxo->get<ppu_linkage_info>();
+	auto& link = local_fxo.get<ppu_linkage_info>();
 
 	// Executable hash
 	sha1_context sha;
@@ -2933,12 +2936,12 @@ std::pair<std::shared_ptr<lv2_overlay>, CellError> ppu_load_overlay(const ppu_ex
 
 	// Apply the patch
 	std::vector<u32> applied;
-	g_fxo->get<patch_engine>().apply(applied, !Emu.DeserialManager() ? hash : std::string{}, [ovlm](u32 addr, u32 size) { return ovlm->get_ptr<u8>(addr, size); });
+	local_fxo.get<patch_engine>().apply(applied, !Emu.DeserialManager() ? hash : std::string{}, [ovlm](u32 addr, u32 size) { return ovlm->get_ptr<u8>(addr, size); });
 
 	if (!Emu.DeserialManager() && !Emu.GetTitleID().empty())
 	{
 		// Alternative patch
-		g_fxo->get<patch_engine>().apply(applied, Emu.GetTitleID() + '-' + hash, [ovlm](u32 addr, u32 size) { return ovlm->get_ptr<u8>(addr, size); });
+		local_fxo.get<patch_engine>().apply(applied, Emu.GetTitleID() + '-' + hash, [ovlm](u32 addr, u32 size) { return ovlm->get_ptr<u8>(addr, size); });
 	}
 
 	if (!applied.empty() || ar)

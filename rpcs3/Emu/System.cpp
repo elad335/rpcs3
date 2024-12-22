@@ -75,15 +75,15 @@ std::string g_cfg_defaults;
 
 atomic_t<u64> g_watchdog_hold_ctr{0};
 
-extern bool ppu_load_exec(const ppu_exec_object&, bool virtual_load, const std::string&, utils::serial* = nullptr);
+extern bool ppu_load_exec(fxo_t& local_fxo, const ppu_exec_object&, bool virtual_load, const std::string&, utils::serial* = nullptr);
 extern void spu_load_exec(const spu_exec_object&);
 extern void spu_load_rel_exec(const spu_rel_object&);
 extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_module*>* loaded_prx);
-extern bool ppu_initialize(const ppu_module&, bool check_only = false, u64 file_size = 0);
-extern void ppu_finalize(const ppu_module&);
-extern void ppu_unload_prx(const lv2_prx&);
-extern std::shared_ptr<lv2_prx> ppu_load_prx(const ppu_prx_object&, bool virtual_load, const std::string&, s64 = 0, utils::serial* = nullptr);
-extern std::pair<std::shared_ptr<lv2_overlay>, CellError> ppu_load_overlay(const ppu_exec_object&, bool virtual_load, const std::string& path, s64 = 0, utils::serial* = nullptr);
+extern bool ppu_initialize(fxo_t& local_fxo, const ppu_module&, bool check_only = false, u64 file_size = 0);
+extern void ppu_finalize(fxo_t& local_fxo, const ppu_module&);
+extern void ppu_unload_prx(fxo_t& local_fxo, const lv2_prx&);
+extern std::shared_ptr<lv2_prx> ppu_load_prx(fxo_t& local_fxo, const ppu_prx_object&, bool virtual_load, const std::string&, s64 = 0, utils::serial* = nullptr);
+extern std::pair<std::shared_ptr<lv2_overlay>, CellError> ppu_load_overlay(fxo_t& local_fxo, const ppu_exec_object&, bool virtual_load, const std::string& path, s64 = 0, utils::serial* = nullptr);
 extern bool ppu_load_rel_exec(const ppu_rel_object&);
 
 extern void send_close_home_menu_cmds();
@@ -1752,7 +1752,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 
 					const ppu_exec_object obj = src;
 
-					if (obj == elf_error::ok && ppu_load_exec(obj, true, path))
+					if (obj == elf_error::ok && ppu_load_exec(*g_fxo, obj, true, path))
 					{
 						ensure(g_fxo->try_get<main_ppu_module>())->path = path;
 					}
@@ -2367,7 +2367,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 
 			const auto _main = ensure(g_fxo->init<main_ppu_module>());
 
-			if (ppu_load_exec(ppu_exec, false, m_path, DeserialManager()))
+			if (ppu_load_exec(*g_fxo, ppu_exec, false, m_path, DeserialManager()))
 			{
 				if (g_cfg.core.ppu_debug && had_been_decrypted)
 				{
@@ -2384,7 +2384,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 				GetCallbacks().on_ready();
 				g_fxo->init(false);
 
-				if (!vm::map(0x3000'0000, 0x1000'0000, 0x200) || !ppu_load_overlay(ppu_exec, false, m_path).first)
+				if (!vm::map(0x3000'0000, 0x1000'0000, 0x200) || !ppu_load_overlay(*g_fxo, ppu_exec, false, m_path).first)
 				{
 					ppu_exec.set_error(elf_error::header_type);
 				}
@@ -2409,7 +2409,7 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 			// PPU PRX
 			GetCallbacks().on_ready();
 			g_fxo->init(false);
-			ppu_load_prx(ppu_prx, false, m_path);
+			ppu_load_prx(*g_fxo, ppu_prx, false, m_path);
 			Pause(true);
 		}
 		else if (spu_exec.open(elf_file) == elf_error::ok)

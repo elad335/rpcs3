@@ -173,14 +173,14 @@ bool serialize<ppu_thread::cr_bits>(utils::serial& ar, typename ppu_thread::cr_b
 	return true;
 }
 
-extern void ppu_initialize();
-extern void ppu_finalize(const ppu_module& info, bool force_mem_release = false);
-extern bool ppu_initialize(const ppu_module& info, bool check_only = false, u64 file_size = 0);
-static void ppu_initialize2(class jit_compiler& jit, const ppu_module& module_part, const std::string& cache_path, const std::string& obj_name, const ppu_module& whole_module);
-extern bool ppu_load_exec(const ppu_exec_object&, bool virtual_load, const std::string&, utils::serial* = nullptr);
-extern std::pair<std::shared_ptr<lv2_overlay>, CellError> ppu_load_overlay(const ppu_exec_object&, bool virtual_load, const std::string& path, s64 file_offset, utils::serial* = nullptr);
-extern void ppu_unload_prx(const lv2_prx&);
-extern std::shared_ptr<lv2_prx> ppu_load_prx(const ppu_prx_object&, bool virtual_load, const std::string&, s64 file_offset, utils::serial* = nullptr);
+extern void ppu_initialize(fxo_t& local_fxo);
+extern void ppu_finalize(fxo_t& local_fxo, const ppu_module& info, bool force_mem_release = false);
+extern bool ppu_initialize(fxo_t& local_fxo, const ppu_module& info, bool check_only = false, u64 file_size = 0);
+static void ppu_initialize2(fxo_t& local_fxo, class jit_compiler& jit, const ppu_module& module_part, const std::string& cache_path, const std::string& obj_name, const ppu_module& whole_module);
+extern bool ppu_load_exec(fxo_t& local_fxo, const ppu_exec_object&, bool virtual_load, const std::string&, utils::serial* = nullptr);
+extern std::pair<std::shared_ptr<lv2_overlay>, CellError> ppu_load_overlay(fxo_t& local_fxo, const ppu_exec_object&, bool virtual_load, const std::string& path, s64 file_offset, utils::serial* = nullptr);
+extern void ppu_unload_prx(fxo_t& local_fxo, const lv2_prx&);
+extern std::shared_ptr<lv2_prx> ppu_load_prx(fxo_t& local_fxo, const ppu_prx_object&, bool virtual_load, const std::string&, s64 file_offset, utils::serial* = nullptr);
 extern void ppu_execute_syscall(ppu_thread& ppu, u64 code);
 static void ppu_break(ppu_thread&, ppu_opcode_t, be_t<u32>*, ppu_intrp_func*);
 
@@ -4218,8 +4218,8 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 				if (auto prx = ppu_load_prx(obj, true, path, offset))
 				{
 					obj.clear(), src.close(); // Clear decrypted file and elf object memory
-					ppu_initialize(*prx, false, file_size);
-					ppu_finalize(*prx, true);
+					ppu_initialize(*g_fxo, *prx, false, file_size);
+					ppu_finalize(*g_fxo, *prx, true);
 					continue;
 				}
 
@@ -4268,8 +4268,8 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 					}
 
 					obj.clear(), src.close(); // Clear decrypted file and elf object memory
-					ppu_initialize(*ovlm, false, file_size);
-					ppu_finalize(*ovlm, true);
+					ppu_initialize(*g_fxo, *ovlm, false, file_size);
+					ppu_finalize(*g_fxo, *ovlm, true);
 					break;
 				}
 
@@ -4348,12 +4348,12 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 			{
 				while (exec_err == elf_error::ok)
 				{
-					main_ppu_module& _main = g_fxo->get<main_ppu_module>();
+					fxo_t local_fxo{};
+
+					main_ppu_module& _main = *ensure(local_fxo.init<main_ppu_module>());
 					_main = {};
 
-					auto current_cache = std::move(g_fxo->get<spu_cache>());
-
-					if (!ppu_load_exec(obj, true, path))
+					if (!ppu_load_exec(*g_fxo, obj, true, path))
 					{
 						// Abort
 						exec_err = elf_error::header_type;
@@ -4362,13 +4362,11 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 
 					if (std::memcmp(main_module.sha1, _main.sha1, sizeof(_main.sha1)) == 0)
 					{
-						g_fxo->get<spu_cache>() = std::move(current_cache);
 						break;
 					}
 
 					if (!_main.analyse(0, _main.elf_entry, _main.seg0_code_end, _main.applied_patches, std::vector<u32>{}, [](){ return Emu.IsStopped(); }))
 					{
-						g_fxo->get<spu_cache>() = std::move(current_cache);
 						break;
 					}
 
@@ -4376,11 +4374,10 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 
 					_main.name = ' '; // Make ppu_finalize work
 					Emu.ConfigurePPUCache();
-					ppu_initialize(_main, false, file_size);
-					spu_cache::initialize(false);
-					ppu_finalize(_main, true);
+					ppu_initialize(local_fxo, _main, false, file_size);
+					spu_cache::initialize(local_fxo, false);
+					ppu_finalize(local_fxo, _main, true);
 					_main = {};
-					g_fxo->get<spu_cache>() = std::move(current_cache);
 					break;
 				}
 
@@ -4401,9 +4398,9 @@ extern void ppu_precompile(std::vector<std::string>& dir_queue, std::vector<ppu_
 	exec_worker();
 }
 
-extern void ppu_initialize()
+extern void ppu_initialize(fxo_t& local_fxo)
 {
-	if (!g_fxo->is_init<main_ppu_module>())
+	if (!local_fxo.is_init<main_ppu_module>())
 	{
 		return;
 	}
@@ -4413,7 +4410,7 @@ extern void ppu_initialize()
 		return;
 	}
 
-	auto& _main = g_fxo->get<main_ppu_module>();
+	auto& _main = local_fxo.get<main_ppu_module>();
 
 	std::optional<scoped_progress_dialog> progress_dialog(std::in_place, get_localized_string(localized_string_id::PROGRESS_DIALOG_ANALYZING_PPU_EXECUTABLE));
 
@@ -4471,7 +4468,7 @@ extern void ppu_initialize()
 		{
 			if (ptr->path.starts_with(firmware_sprx_path))
 			{
-				compile_fw |= ppu_initialize(*ptr, true);
+				compile_fw |= ppu_initialize(local_fxo, *ptr, true);
 
 				// Fixup for compatibility with old savestates
 				if (Emu.DeserialManager() && ptr->name == "liblv2.sprx")
@@ -4498,7 +4495,7 @@ extern void ppu_initialize()
 			if (auto prx = ppu_load_prx(ppu_prx_object{decrypt_self(fs::file{eseibrd})}, true, eseibrd, 0))
 			{
 				// Check if cache exists for this infinitesimally small prx
-				dev_flash_located = ppu_initialize(*prx, true);
+				dev_flash_located = ppu_initialize(local_fxo, *prx, true);
 			}
 		}
 
@@ -4526,7 +4523,7 @@ extern void ppu_initialize()
 	// Initialize main module cache
 	if (!_main.segs.empty())
 	{
-		ppu_initialize(_main);
+		ppu_initialize(local_fxo, _main);
 	}
 
 	// Initialize preloaded libraries
@@ -4537,11 +4534,11 @@ extern void ppu_initialize()
 			return;
 		}
 
-		ppu_initialize(*ptr);
+		ppu_initialize(local_fxo, *ptr);
 	}
 }
 
-bool ppu_initialize(const ppu_module& info, bool check_only, u64 file_size)
+bool ppu_initialize(fxo_t& local_fxo, const ppu_module& info, bool check_only, u64 file_size)
 {
 	if (g_cfg.core.ppu_decoder != ppu_decoder_type::llvm)
 	{
@@ -4550,7 +4547,7 @@ bool ppu_initialize(const ppu_module& info, bool check_only, u64 file_size)
 			return false;
 		}
 
-		auto& toc_manager = g_fxo->get<ppu_toc_manager>();
+		auto& toc_manager = local_fxo.get<ppu_toc_manager>();
 
 		std::lock_guard lock(toc_manager.mutex);
 
@@ -4570,7 +4567,7 @@ bool ppu_initialize(const ppu_module& info, bool check_only, u64 file_size)
 					continue;
 				}
 
-				if (g_fxo->is_init<ppu_far_jumps_t>() && !g_fxo->get<ppu_far_jumps_t>().get_targets(block.first, block.second).empty())
+				if (local_fxo.is_init<ppu_far_jumps_t>() && !local_fxo.get<ppu_far_jumps_t>().get_targets(block.first, block.second).empty())
 				{
 					// Replace the block with ppu_far_jump
 					continue;
@@ -4656,7 +4653,7 @@ bool ppu_initialize(const ppu_module& info, bool check_only, u64 file_size)
 	}
 
 	// Permanently loaded compiled PPU modules (name -> data)
-	jit_module& jit_mod = g_fxo->get<jit_module_manager>().get(cache_path + "_" + std::to_string(std::bit_cast<usz>(info.segs[0].ptr)));
+	jit_module& jit_mod = g_fxo->get<jit_module_manager>().get(cache_path + "_" + std::to_string(std::bit_cast<usz>(info.segs[0].ptr)) + "_" std::to_string(std::bit_cast<usz>(&local_fxo)));
 
 	// Compiler instance (deferred initialization)
 	std::shared_ptr<jit_compiler>& jit = jit_mod.pjit;
@@ -4759,20 +4756,23 @@ bool ppu_initialize(const ppu_module& info, bool check_only, u64 file_size)
 				}
 			}
 
-			if (g_fxo->is_init<ppu_far_jumps_t>())
+			if (local_fxo.is_init<ppu_far_jumps_t>())
 			{
-				auto targets = g_fxo->get<ppu_far_jumps_t>().get_targets(func.addr, func.size);
+				auto targets = local_fxo.get_targets(func.addr, func.size);
 
 				for (auto [source, target] : targets)
 				{
-					auto far_jump = ensure(g_fxo->get<ppu_far_jumps_t>().gen_jump(source));
+					auto far_jump = ensure(local_fxo.get<ppu_far_jumps_t>().gen_jump(source));
 
 					if (source == func.addr && jit)
 					{
 						jit->update_global_mapping(fmt::format("__0x%x", func.addr - reloc), reinterpret_cast<u64>(far_jump));
 					}
 
-					ppu_register_function_at(source, 4, far_jump);
+					if (g_fxo == &local_fxo)
+					{
+						ppu_register_function_at(source, 4, far_jump);
+					}
 				}
 
 				if (!targets.empty())

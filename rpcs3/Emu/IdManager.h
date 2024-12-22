@@ -13,6 +13,8 @@
 
 extern stx::manual_typemap<void, 0x20'00000, 128> g_fixed_typemap;
 
+using fxo_t = decltype(g_fixed_typemap);
+
 constexpr auto* g_fxo = &g_fixed_typemap;
 
 enum class thread_state : u32;
