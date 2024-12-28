@@ -100,9 +100,8 @@ public:
 	lv2_obj() noexcept = default;
 	lv2_obj(u32 i) noexcept : exists{ i } {}
 	lv2_obj(lv2_obj&& rhs) noexcept : exists{ +rhs.exists } {}
-	lv2_obj(utils::serial&) noexcept {}
 	lv2_obj& operator=(lv2_obj&& rhs) noexcept { exists = +rhs.exists; return *this; }
-	void save(utils::serial&) {}
+	static void save(utils::serial&) { ensure(!"Unreachable"); }
 
 	// Existence validation (workaround for shared-ptr ref-counting)
 	atomic_t<u32> exists = 0;

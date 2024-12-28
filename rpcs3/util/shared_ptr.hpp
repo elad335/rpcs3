@@ -987,10 +987,7 @@ namespace stx
 			const uptr _old = reinterpret_cast<uptr>(cmp.m_ptr);
 			const uptr _new = reinterpret_cast<uptr>(exch.m_ptr);
 
-			if (exch.m_ptr)
-			{
-				exch.d()->refs += c_ref_mask;
-			}
+			bool did_ref = false;
 
 			atomic_ptr old;
 
@@ -1000,6 +997,13 @@ namespace stx
 				{
 					// Set new value
 					val = _new << c_ref_size;
+
+					if (!did_ref && exch.m_ptr)
+					{
+						exch.d()->refs += c_ref_mask;
+						did_ref = true;
+					}
+
 					return true;
 				}
 
@@ -1008,7 +1012,7 @@ namespace stx
 
 			if (ok)
 			{
-				// Success (exch is consumed, cmp_and_old is unchanged)
+				// Success (exch is consumed)
 				exch.m_ptr = nullptr;
 				old.m_val.raw() = _val;
 				return true;
@@ -1032,7 +1036,13 @@ namespace stx
 		template <typename U> requires same_ptr_implicit_v<T, U>
 		bool compare_and_swap_test(const single_ptr<U>& cmp, shared_type exch)
 		{
-			return compare_and_swap_test(reinterpret_cast<const shared_ptr<U>&>(cmp), std::move(exch));
+			shared_ptr<U> cmp_shared;
+			cmp_shared.m_ptr = cmp.m_ptr; // Store pointer without increasing reference count
+			static_assert(sizeof(cmp.m_ptr) == sizeof(cmp) && sizeof(cmp) == sizeof(cmp_shared), "Outdated hackery, update code!");
+
+			const bool result = compare_and_swap_test(cmp_shared, std::move(exch));
+			cmp_shared.m_ptr = nullptr; // Release fake pointer
+			return result;
 		}
 
 		// Helper utility
@@ -1056,9 +1066,9 @@ namespace stx
 			do
 			{
 				// Update old head with current value
-				next.m_ptr = reinterpret_cast<T*>(old.m_val.raw() >> c_ref_size);
+				next.m_ptr = ptr_to(old.m_val.raw());
 
-			} while (!m_val.compare_exchange(old.m_val.raw(), reinterpret_cast<uptr>(exch.m_ptr) << c_ref_size));
+			} while (!m_val.compare_exchange(old.m_val.raw(), to_val(exch.m_ptr)));
 
 			// This argument is consumed (moved from)
 			exch.m_ptr = nullptr;
@@ -1073,7 +1083,7 @@ namespace stx
 		// Simple atomic load is much more effective than load(), but it's a non-owning reference
 		T* observe() const noexcept
 		{
-			return reinterpret_cast<T*>(m_val >> c_ref_size);
+			return ptr_to(m_val);
 		}
 
 		explicit constexpr operator bool() const noexcept

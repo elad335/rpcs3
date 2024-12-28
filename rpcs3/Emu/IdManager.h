@@ -152,7 +152,7 @@ namespace id_manager
 	{
 		dummy_construct() = default;
 		dummy_construct(utils::serial&) noexcept {}
-		void save(utils::serial&) {}
+		static void save(utils::serial&) { ensure(!"Unreachable"); }
 
 		static constexpr u32 id_base = 1, id_step = 1, id_count = 1;
 		static constexpr double savestate_init_pos = 0;

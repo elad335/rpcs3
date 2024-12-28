@@ -18,7 +18,7 @@ lv2_cond::lv2_cond(utils::serial& ar) noexcept
 	: key(ar)
 	, name(ar)
 	, mtx_id(ar)
-	, mutex(idm::check_unlocked<lv2_obj, lv2_mutex>(mtx_id))
+	, mutex(idm::check_unlocked<lv2_obj, lv2_mutex>(ensure(mtx_id)))
 	, _mutex(idm::get_unlocked<lv2_obj, lv2_mutex>(mtx_id)) // May be nullptr
 {
 }

@@ -271,7 +271,7 @@ public:
 		return name;
 	}
 
-	void save(utils::serial&) {}
+	static void save(utils::serial&) { ensure(!"Unreachable"); }
 };
 
 struct lv2_file final : lv2_fs_object
