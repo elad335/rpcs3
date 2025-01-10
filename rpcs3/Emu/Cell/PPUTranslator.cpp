@@ -325,6 +325,9 @@ Function* PPUTranslator::Translate(const ppu_function& info)
 
 Function* PPUTranslator::GetSymbolResolver(const ppu_module<lv2_obj>& info)
 {
+	ensure(m_module->getFunction("__resolve_symbols") == nullptr);
+	ensure(info.local_addr_bounds);
+
 	m_function = cast<Function>(m_module->getOrInsertFunction("__resolve_symbols", FunctionType::get(get_type<void>(), { get_type<u8*>(), get_type<u64>() }, false)).getCallee());
 
 	IRBuilder<> irb(BasicBlock::Create(m_context, "__entry", m_function));
@@ -356,10 +359,92 @@ Function* PPUTranslator::GetSymbolResolver(const ppu_module<lv2_obj>& info)
 	// Create an array of function pointers
 	std::vector<llvm::Constant*> functions;
 
+	const auto [min_addr, max_addr] = *info.local_addr_bounds;
+
 	for (const auto& f : info.funcs)
 	{
 		if (!f.size)
 		{
+			continue;
+		}
+
+		if (f.addr < min_addr || f.addr > max_addr)
+		{
+			// Build a "null" function that contains its name
+			const auto func = build_function_asm<void (*)()>("NULL", [&](native_asm& c, auto& args)
+			{
+#if defined(ARCH_X64)
+				c.mov(x86::rax, x86::qword_ptr(reinterpret_cast<u64>(&vm::g_exec_addr)));
+				c.mov(x86::edx, addr);
+				c.mov(x86::dword_ptr(x86::rbp, ::offset32(&ppu_thread::cia)), x86::edx); // Store PC
+
+				c.mov(x86::rax, x86::qword_ptr(x86::rax, x86::edx, 1, 0)); // Load call target
+				c.mov(x86::rdx, x86::rax);
+				c.shl(x86::rax, 16);
+				c.shr(x86::rax, 16);
+				c.shr(x86::rdx, 48);
+				c.shl(x86::edx, 13);
+				c.jmp(x86::rax);
+#else
+				// AArch64 implementation
+				// Load REG_Base - use absolute jump target to bypass rel jmp range limits
+				c.mov(a64::x19, Imm(reinterpret_cast<u64>(&vm::g_exec_addr)));
+				c.ldr(a64::x19, arm::Mem(a64::x19));
+
+				// Load PC
+				const arm::GpX pc = a64::x15;
+				const arm::GpX cia_addr_reg = a64::x11;
+				// Load offset value, Multiply by 2 to index into ptr table
+				c.mov(cia_addr_reg, Imm(u64{addr} * 2));
+				// Load cia
+				c.ldr(a64::w15, arm::Mem(ppu_t_base, cia_addr_reg));
+				// Multiply by 2 to index into ptr table
+				const arm::GpX index_shift = a64::x12;
+				c.mov(index_shift, Imm(2));
+				c.mul(pc, pc, index_shift);
+
+				// Load call target
+				const arm::GpX call_target = a64::x13;
+				c.ldr(call_target, arm::Mem(a64::x19, pc));
+				// Compute REG_Hp
+				const arm::GpX reg_hp = a64::x21;
+				c.mov(reg_hp, call_target);
+				c.lsr(reg_hp, reg_hp, 48);
+				c.lsl(a64::w21, a64::w21, 13);
+
+				// Zero top 16 bits of call target
+				c.lsl(call_target, call_target, Imm(16));
+				c.lsr(call_target, call_target, Imm(16));
+
+				// Load registers
+				c.mov(a64::x22, Imm(reinterpret_cast<u64>(&vm::g_base_addr)));
+				c.ldr(a64::x22, arm::Mem(a64::x22));
+
+				const arm::GpX gpr_addr_reg = a64::x9;
+				c.mov(gpr_addr_reg, Imm(static_cast<u64>(::offset32(&ppu_thread::gpr))));
+				c.add(gpr_addr_reg, gpr_addr_reg, ppu_t_base);
+				c.ldr(a64::x23, arm::Mem(gpr_addr_reg));
+				c.ldr(a64::x24, arm::Mem(gpr_addr_reg, 8));
+				c.ldr(a64::x25, arm::Mem(gpr_addr_reg, 16));
+
+				// Thread context save. This is needed for PPU because different functions can switch between x19 and x20 for the base register.
+				// We need a different solution to ensure that no matter which version, we get the right vaue on far return.
+				c.mov(a64::x26, ppu_t_base);
+
+				// Save thread pointer to stack. SP is the only register preserved across GHC calls.
+				c.sub(a64::sp, a64::sp, Imm(16));
+				c.str(a64::x20, arm::Mem(a64::sp));
+
+				// GHC scratchpad mem. If managed correctly (i.e no returns ever), GHC functions should never require a stack frame.
+				// We allocate a slab to use for all functions as they tail-call into each other.
+				c.sub(a64::sp, a64::sp, Imm(8192));
+
+				// Execute LLE call
+				c.blr(call_target);
+#endif
+			});
+
+			func_ptr = reinterpret_cast<u64>(func);
 			continue;
 		}
 

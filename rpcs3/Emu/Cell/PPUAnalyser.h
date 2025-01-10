@@ -99,6 +99,7 @@ struct ppu_module : public Type
 	std::vector<u32> applied_patches;
 	std::deque<std::shared_ptr<void>> allocations;
 	std::map<u32, u32> addr_to_seg_index;
+	sd::shared_ptr<std::pair<u32, u32>> local_bounds;
 
 	// Copy info without functions
 	void copy_part(const ppu_module& info)

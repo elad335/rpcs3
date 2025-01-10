@@ -3677,8 +3677,8 @@ namespace
 	// Compiled PPU module info
 	struct jit_module
 	{
-		void(*symbol_resolver)(u8*, u64) = nullptr;
-		std::shared_ptr<jit_compiler> pjit;
+		std::vector<void(*)(u8*, u64)> symbol_resolvers;
+		std::vector<std::shared_ptr<jit_compiler>> pjit;
 		bool init = false;
 	};
 
@@ -3729,6 +3729,7 @@ namespace
 			}
 
 			to_destroy.pjit = std::move(found->second.pjit);
+			to_destroy.symbol_resolvers = std::move(found->second.symbol_resolvers);
 
 			bucket.map.erase(found);
 		}
@@ -4659,7 +4660,7 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 	jit_module& jit_mod = g_fxo->get<jit_module_manager>().get(cache_path + "_" + std::to_string(std::bit_cast<usz>(info.segs[0].ptr)));
 
 	// Compiler instance (deferred initialization)
-	std::shared_ptr<jit_compiler>& jit = jit_mod.pjit;
+	std::vector<std::shared_ptr<jit_compiler>>& jits = jit_mod.pjit;
 
 	// Split module into fragments <= 1 MiB
 	usz fpos = 0;
@@ -4723,13 +4724,56 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 	}
 
 	u32 total_compile = 0;
+	usz jit_indexer = 0;
+
+	auto symbols_cement = [runtime = std::make_shared<jit_runtime>()](const std::string& name) -> u64
+	{
+		u32 func_addr = -1;
+
+		if (name.starts_with("__0x"))
+		{
+			u32 addr = umax;
+			auto res = std::from_chars(name.c_str() + 4, name.c_str() + name.size(), addr, 16);
+
+			if (res.ec == std::errc() && res.ptr == name.c_str() + name.size() && addr < 0x8000'0000)
+			{
+				func_addr = addr;
+			}
+		}
+
+		if (func_addr == umax)
+		{
+			return {};
+		}
+
+		auto func = build_function_asm<u8*, ppu_thread&, u64, u8*, u64, u64, u64>(name, [&](native_asm& c, auto& args)
+		{
+#if defined(ARCH_X64)
+			c.mov(x86::rax, x86::qword_ptr(reinterpret_cast<u64>(&vm::g_exec_addr)));
+			c.mov(x86::edx, x86::dword_ptr(x86::rbp, ::offset32(&ppu_thread::cia))); // Load PC
+
+			c.mov(x86::rax, x86::qword_ptr(x86::rax, x86::edx, 1, 0)); // Load call target
+			c.mov(x86::rdx, x86::rax);
+			c.shl(x86::rax, 16);
+			c.shr(x86::rax, 16);
+			c.shr(x86::rdx, 48);
+			c.shl(x86::edx, 13);
+			c.mov(x86::r12d, x86::edx); // Load relocation base
+			c.jmp(x86::rax);
+#else
+
+#endif
+		}, runtime.get());
+
+		return reinterpret_cast<usz>(func);
+	}
 
 	while (!jit_mod.init && fpos < info.funcs.size())
 	{
 		// Initialize compiler instance
-		if (!jit && is_being_used_in_emulation)
+		while (jits.size() <= jit_indexer && is_being_used_in_emulation)
 		{
-			jit = std::make_shared<jit_compiler>(s_link_table, g_cfg.core.llvm_cpu);
+			jits.emplace_back(std::make_shared<jit_compiler>(s_link_table, g_cfg.core.llvm_cpu, 0, symbols_cement));
 		}
 
 		// Copy module information (TODO: optimize)
@@ -4767,9 +4811,12 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 				{
 					auto far_jump = ensure(g_fxo->get<ppu_far_jumps_t>().gen_jump(source));
 
-					if (source == func.addr && jit)
+					if (source == func.addr && !jits.empty())
 					{
-						jit->update_global_mapping(fmt::format("__0x%x", func.addr - reloc), reinterpret_cast<u64>(far_jump));
+						for (const auto& jit : jits)
+						{
+							jit->update_global_mapping(fmt::format("__0x%x", func.addr - reloc), reinterpret_cast<u64>(far_jump));
+						}
 					}
 
 					ppu_register_function_at(source, 4, far_jump);
@@ -4996,7 +5043,7 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 		// Check object file
 		if (jit_compiler::check(cache_path + obj_name))
 		{
-			if (!jit && !check_only)
+			if (!jit.empty() && !check_only)
 			{
 				ppu_log.success("LLVM: Module exists: %s", obj_name);
 
