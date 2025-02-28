@@ -2194,6 +2194,19 @@ public:
 				has_gpr_memory_barriers |= b.has_gpr_memory_barriers;
 			}
 
+			bool has_rdch = false;
+			for (u32 op : func.data)
+			{
+				const auto type = g_spu_itype.decode(op);
+				if (type == spu_itype::RDCH && spu_opcode_t{op}.ra == SPU_RdEventStat)
+				{
+					has_rdch = true;
+					break;
+				}
+			}
+
+			auto& rdch_log = has_rdch ? spu_log.warning : spu_log.trace;
+
 			for (usz bi = 0; bi < block_q.size(); bi++)
 			{
 				auto bqbi = block_q[bi].second;
@@ -2211,7 +2224,7 @@ public:
 							{
 								if (pdt.dominates(b.store[i], bs))
 								{
-									spu_log.trace("Erased r%u store from block 0x%x (simple)", i, block_q[bi].first);
+									rdch_log("[%s] Erased r%u store from block 0x%x (simple)", m_hash, i, block_q[bi].first);
 
 									bs->eraseFromParent();
 									bs = nullptr;
@@ -2390,7 +2403,7 @@ public:
 						// Finally erase the dead store
 						if (!killers.empty())
 						{
-							spu_log.trace("Erased r%u store from block 0x%x (reversed)", i, block_q[bi].first);
+							rdch_log("[%s] Erased r%u store from block 0x%x (reversed)", m_hash, i, block_q[bi].first);
 
 							bs->eraseFromParent();
 							bs = nullptr;
@@ -2562,7 +2575,7 @@ public:
 										}
 									}
 
-									spu_log.trace("Postponed r%u store from block 0x%x (single)", i, block_q[bi].first);
+									rdch_log("[%s] Postponed r%u store from block 0x%x (single)", m_hash, i, block_q[bi].first);
 								}
 								else
 								{
@@ -2603,7 +2616,7 @@ public:
 										pdt.recalculate(*m_function);
 										dt.recalculate(*m_function);
 
-										spu_log.trace("Postponed r%u store from block 0x%x (multiple)", i, block_q[bi].first);
+										rdch_log("[%s] Postponed r%u store from block 0x%x (multiple)", m_hash, i, block_q[bi].first);
 									}
 
 									ins = edge->getTerminator();
