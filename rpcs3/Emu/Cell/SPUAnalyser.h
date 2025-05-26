@@ -4,6 +4,7 @@
 struct spu_itype
 {
 	static constexpr struct memory_tag{} memory{}; // Memory Load/Store Instructions
+	static constexpr struct load_tag{} is_load{}; // Memory Load Instructions
 	static constexpr struct constant_tag{} constant{}; // Constant Formation Instructions
 	static constexpr struct integer_tag{} integer{}; // Integer and Logical Instructions
 	static constexpr struct shiftrot_tag{} shiftrot{}; // Shift and Rotate Instructions
@@ -267,6 +268,12 @@ struct spu_itype
 	}
 
 	// Test for memory instruction
+	friend constexpr bool operator &(type value, load_tag)
+	{
+		return value >= LQD && value <= LQR;
+	}
+
+	// Test for memory load instruction
 	friend constexpr bool operator &(type value, memory_tag)
 	{
 		return value >= STQD && value <= LQR;

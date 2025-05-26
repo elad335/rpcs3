@@ -2103,10 +2103,204 @@ public:
 					{
 						if (pred >= baddr)
 						{
-							// If this block is a target of a backward branch (possibly loop), emit a check
-							need_check = true;
+							if (pred != baddr)
+							{
+								need_check = true;
+								break;
+							}
+
+							// Get predicate instruction
+							for (;; pred += 4)
+							{
+								if (pred >= start + func.data.size() * 4)
+								{
+									need_check = true;
+									break;
+								}
+
+								const u32 op = func.data[(pred - start) / 4];
+
+								if (!op)
+								{
+									// Cannot handle a hole
+									need_check = true;
+									break;
+								}
+
+								const auto type = g_spu_itype.decode(op);
+								const auto flag = g_spu_iflag.decode(op);
+
+								if (type & spu_itype::branch)
+								{
+									if (!(flag & spu_iflag::use_rc))
+									{
+										// Branch without condition
+										need_check = true;
+									}
+
+									break;
+								}
+							}
+
+							if (need_check || pred == baddr)
+							{
+								need_check = true;
+								break;
+							}
+
+							bool used[s_reg_max + 1]{};
+							bool rddecs[s_reg_max + 1]{};
+
+							std::bitset<s_reg_max + 1> reg_origin[s_reg_max + 1]{};
+							typename spu_itype::type reg_insts[s_reg_max + 1]{};
+							u32 cmp_pc = 0;
+							u32 cmp_reg = s_reg_max;
+							u32 cmp_invalidated = 0;
+
+							for (u32 i = 0; i < s_reg_max; i++)
+							{
+								reg_origin[i].set(i);
+							}
+
+							for (u32 i = baddr; ; i += 4)
+							{
+								if (i > pred)
+								{
+									need_check = true;
+									break;
+								}
+
+								const spu_opcode_t op{std::bit_cast<be_t<u32>>(func.data[(i - start) / 4])};
+								const auto type = g_spu_itype.decode(op.opcode);
+								const auto flag = g_spu_iflag.decode(op.opcode);
+
+								if (type == spu_itype::RDCH)
+								{
+									if (op.ra == SPU_RdDec)
+									{
+										if (used[op.rt])
+										{
+											need_check = true;
+											break;
+										}
+
+										rddecs[op.rt] = true;
+									}
+								}
+
+								if (type == spu_itype::WRCH || type == spu_itype::RCHCNT || type == spu_itype::STOP)
+								{
+									need_check = true;
+									break;
+								}
+
+								std::bitset<s_reg_max + 1> single_used_register{};
+
+								auto use_op = [&](u32 reg)
+								{
+									single_used_register |= reg_origin[reg];
+									used[reg] = true;
+								};
+
+								if (!(type & spu_itype::zregmod) || type & spu_itype::branch)
+								{
+									use_op(flag & spu_iflag::use_ra ? op.ra : s_reg_max);
+									use_op(flag & spu_iflag::use_ra ? op.rb : s_reg_max);
+									use_op(flag & spu_iflag::use_rc ? op.rc : s_reg_max);
+
+									const u32 rt = type & spu_itype::_quadrop ? op.rt4 : op.rt;
+									reg_origin[rt] = single_used_register;
+
+									if (type & spu_itype::branch)
+									{
+										if (cmp_invalidated || !cmp_pc)
+										{
+											need_check = true;
+											break;
+										}
+
+										const spu_opcode_t cmp_op{std::bit_cast<be_t<u32>>(func.data[(cmp_pc - start) / 4])};
+
+										if (cmp_op.rt != op.rt)
+										{
+											need_check = true;
+											break;
+										}
+
+										if (reg_insts[cmp_op.ra] != spu_itype::AI)
+										{
+											need_check = true;
+											break;
+										}
+
+										if (!reg_origin[cmp_op.ra].test(cmp_op.ra))
+										{
+											need_check = true;
+											break;
+										}
+
+										reg_origin[cmp_op.ra].reset(cmp_op.ra);
+
+										if (reg_origin[cmp_op.ra].any())
+										{
+											need_check = true;
+											break;
+										}
+
+										spu_log.error("Success!");
+										need_check = false;
+										break;
+									}
+									else if (type == spu_itype::ORI && op.si10 == 0)
+									{
+										//
+									}
+									else if (type == spu_itype::SHLQBYI && !op.i7)
+									{
+										//
+									}
+									else
+									{
+										if (type == spu_itype::AI && op.si10 == 1)
+										{
+											reg_insts[rt] = spu_itype::AI;
+										}
+										else
+										{
+											reg_insts[rt] = spu_itype::STOP;
+										}
+									}
+
+									if (!(type & spu_itype::branch))
+									{
+										if (rt == cmp_reg)
+										{
+											cmp_invalidated = true;
+										}
+
+										reg_origin[rt] = single_used_register;
+									}
+								}
+
+								if (type == spu_itype::CLGTI || type == spu_itype::CLGTHI || type == spu_itype::CLGTBI || type == spu_itype::CGTI || type == spu_itype::CGTHI || type == spu_itype::CGTBI)
+								{
+									if (!cmp_pc || i > cmp_pc)
+									{
+										cmp_reg = op.ra;
+										cmp_pc = i;
+									}
+
+									cmp_invalidated = false;
+								}
+							}
+						}
+
+						if (need_check)
+						{
 							break;
 						}
+
+
 					}
 				}
 
