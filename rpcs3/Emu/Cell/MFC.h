@@ -106,3 +106,12 @@ struct mfc_cmd_dump
 	u64 block_hash;
 	alignas(16) u8 data[128];
 };
+
+class spu_thread;
+
+class mfc_thread
+{
+	spu_thread* _this;
+
+	void operator()();
+};

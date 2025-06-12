@@ -236,6 +236,7 @@ struct ff_t : bf_base<T, N>
 {
 	using type = typename ff_t::type;
 	using vtype = typename ff_t::vtype;
+	using compact_type = typename ff_t::compact_type;
 
 	// Return constant value
 	static constexpr vtype extract(const type&)
@@ -244,10 +245,20 @@ struct ff_t : bf_base<T, N>
 		return V;
 	}
 
+	static constexpr vtype insert(compact_type)
+	{
+		return V << N;
+	}
+
 	// Get value
 	constexpr operator vtype() const noexcept
 	{
 		return V;
+	}
+
+	static constexpr uint data_mask()
+	{
+		return umax;
 	}
 };
 

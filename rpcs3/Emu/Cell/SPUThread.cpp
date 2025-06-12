@@ -43,6 +43,7 @@
 #include <immintrin.h>
 #else
 #include <x86intrin.h>
+#include "SPUThread.h"
 #endif
 #endif
 
@@ -3185,7 +3186,7 @@ bool spu_thread::do_dma_check(const spu_mfc_cmd& args)
 {
 	const u32 mask = utils::rol32(1, args.tag);
 
-	if (mfc_barrier & mask || (args.cmd & (MFC_BARRIER_MASK | MFC_FENCE_MASK) && mfc_fence & mask)) [[unlikely]]
+	if (mfc_barrier & mask || (args.cmd & (MFC_BARRIER_MASK | MFC_FENCE_MASK) && ~get_mfc_completed() & mask)) [[unlikely]]
 	{
 		// Check for special value combination (normally impossible)
 		if (false)
@@ -4204,6 +4205,8 @@ void spu_thread::do_putlluc(const spu_mfc_cmd& args)
 
 bool spu_thread::do_mfc(bool can_escape, bool must_finish)
 {
+	wait_for_async_cmd(true);
+
 	u32 removed = 0;
 	u32 barrier = 0;
 	u32 fence = 0;
@@ -4562,7 +4565,64 @@ bool spu_thread::is_exec_code(u32 addr, std::span<const u8> ls_ptr, u32 base_add
 
 u32 spu_thread::get_mfc_completed() const
 {
-	return ch_tag_mask & ~mfc_fence;
+	u32 ret = ch_tag_mask & ~mfc_fence;
+	return ret & ((async_ch_mfc_cmd.load().cmd_state & async_cmd_state::pending) ? ~(1u << last_async_cmd_tag) : u32{umax});
+}
+
+void spu_thread::wait_for_async_cmd(bool wait_is_failed)
+{
+	if ((async_ch_mfc_cmd.load().cmd_state & async_cmd_state::pending))
+	{
+		if (wait_is_failed)
+		{
+			async_cmd_success[(pc / 4) % std::size(async_cmd_success)] = false;
+		}
+
+		while (async_ch_mfc_cmd.load().cmd_state & async_cmd_state::pending)
+		{
+			if (async_ch_mfc_cmd.load().cmd_state == async_cmd_state::pending)
+			{
+				async_cmd_t state = async_ch_mfc_cmd.fetch_op([&](async_cmd_t& state)
+				{
+					// Claim command
+					if (state.cmd_type == async_cmd_state::pending)
+					{
+						state.cmd_type = async_cmd_state::executing;
+					}
+				});
+
+				if (state.cmd_type != async_cmd_state::pending)
+				{
+					continue;
+				}
+
+				spu_mfc_cmd command{};
+				command.eah = 0;
+				command.tag = 0;
+				command.eal = state.eal;
+				command.lsa = state.lsa;
+				command.size = state.size_plus_16 + 16;
+				command.cmd = MFC(+state.cmd_type);
+				do_dma_transfer(this, command, ls);
+
+				async_ch_mfc_cmd.fetch_op([&](async_cmd_t& state)
+				{
+					// Notify completion
+					state.cmd_type = async_cmd_state::done;
+				});
+
+				break;
+			}
+
+			busy_wait(300);
+		}
+	}
+
+	if (async_ch_mfc_cmd.load().cmd_state == async_cmd_state::done)
+	{
+		async_ch_mfc_cmd.release(async_cmd_t{});
+		mfc_size--;
+	}
 }
 
 u32 evaluate_spin_optimization(std::span<u8> stats, u64 evaluate_time, const cfg::uint<0, 100>& wait_percent, bool inclined_for_responsiveness = false)
@@ -5357,7 +5417,19 @@ bool spu_thread::process_mfc_cmd()
 			{
 				if (!g_cfg.core.mfc_transfers_shuffling)
 				{
-					if (ch_mfc_cmd.size)
+					if (ch_mfc_cmd.size >= 4096 && ~ch_mfc_cmd.cmd & MFC_BARRIER_CMD)
+					{
+						wait_for_async_cmd(true);
+
+						async_cmd_t cmd{};
+						cmd.eal = ch_mfc_cmd.eal;
+						cmd.lsa = ch_mfc_cmd.lsa;
+						cmd.cmd_type = ch_mfc_cmd.cmd;
+						cmd.cmd_state = async_cmd_state::pending;
+						cmd.size_plus_16 = ch_mfc_cmd.size - 16;
+						async_ch_mfc_cmd.release(cmd);
+					}
+					else if (ch_mfc_cmd.size)
 					{
 						do_dma_transfer(this, ch_mfc_cmd, ls);
 					}
