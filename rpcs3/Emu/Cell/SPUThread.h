@@ -676,6 +676,31 @@ public:
 	// MFC command data
 	spu_mfc_cmd ch_mfc_cmd{};
 
+	// Asynchronosous MFC command data
+	// Suitable for 16 bytes aligned transfers only!
+	enum async_cmd_state : u64
+	{
+		nothing,
+		done,
+		pending,
+		executing,
+	};
+
+	union alignas(8) async_cmd_t
+	{
+		bf_t<u64, 0, 28> eal;
+		bf_t<u64, 28, 14> lsa;
+		bf_t<u64, 42, 12> size_plus_16;
+		bf_t<u64, 54, 2> cmd_state;
+		bf_t<u64, 56, 8> cmd_type;
+	};
+
+	std::shared_ptr<named_thread<mfc_thread>> mfc_thread_inst;
+	atomic_t<async_cmd_t> async_ch_mfc_cmd{};
+	u32 last_async_cmd_tag = 32;
+	u32 last_async_cmd_pc = SPU_LS_SIZE;
+	bool async_cmd_success[(0x10000 / 4)] {};
+
 	// MFC command queue
 	spu_mfc_cmd mfc_queue[16]{};
 	u32 mfc_size = 0;
@@ -849,6 +874,7 @@ public:
 	bool do_putllc(const spu_mfc_cmd& args);
 	bool do_mfc(bool can_escape = true, bool must_finish = true);
 	u32 get_mfc_completed() const;
+	void wait_for_async_cmd(bool wait_is_failed);
 
 	bool process_mfc_cmd();
 	ch_events_t get_events(u64 mask_hint = umax, bool waiting = false, bool reading = false);

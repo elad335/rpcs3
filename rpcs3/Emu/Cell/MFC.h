@@ -96,6 +96,16 @@ struct alignas(16) spu_mfc_cmd
 	u32 lsa;
 	u32 eal;
 	u32 eah;
+
+	bool is_barrier_transfer() const noexcept
+	{
+		return cmd != MFC_SDCRZ_CMD && !!(cmd & MFC_BARRIER_MASK);
+	}
+
+	bool is_fence_or_barrier_transfer() const noexcept
+	{
+		return cmd != MFC_SDCRZ_CMD && !!(cmd & (MFC_BARRIER_MASK + MFC_FENCE_MASK));
+	}
 };
 
 enum class spu_block_hash : u64;
@@ -105,4 +115,19 @@ struct mfc_cmd_dump
 	spu_mfc_cmd cmd;
 	u64 block_hash;
 	alignas(16) u8 data[128];
+};
+
+class spu_thread;
+
+class mfc_thread
+{
+	spu_thread* _this;
+
+public:
+	mfc_thread(spu_thread* spu) noexcept
+		: _this(spu)
+	{
+	}
+
+	void operator()();
 };

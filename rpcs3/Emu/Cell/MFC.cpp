@@ -1,5 +1,7 @@
 #include "stdafx.h"
 #include "MFC.h"
+#include "Utilities/Thread.h"
+#include "SPUThread.h"
 
 template <>
 void fmt_class_string<MFC>::format(std::string& out, u64 arg)
@@ -71,4 +73,56 @@ void fmt_class_string<spu_mfc_cmd>::format(std::string& out, u64 arg)
 	const u8 tag = cmd.tag;
 
 	fmt::append(out, "%-8s #%02u 0x%05x:0x%08llx 0x%x%s", cmd.cmd, tag & 0x7f, cmd.lsa, u64{cmd.eah} << 32 | cmd.eal, cmd.size, (tag & 0x80) ? " (stalled)" : "");
+}
+
+using async_cmd_t = spu_thread::async_cmd_t;
+using async_cmd_state = spu_thread::async_cmd_state;
+
+void mfc_thread::operator()()
+{
+	while (thread_ctrl::state() != thread_state::aborting && cpu_flag::exit - _this->state)
+	{
+		async_cmd_t state = _this->async_ch_mfc_cmd.fetch_op([&](async_cmd_t& state)
+		{
+			// Claim command
+			if (state.cmd_state == async_cmd_state::pending)
+			{
+				state.cmd_state = async_cmd_state::executing;
+			}
+		});
+
+		if (state.cmd_state != async_cmd_state::pending)
+		{
+			continue;
+		}
+
+		spu_mfc_cmd command{};
+		command.eah = 0;
+		command.tag = 0;
+
+		if (state.cmd_type & MFC_LIST_MASK)
+		{
+			command.eal = (state.eal * 16) & 0x3FFF0;
+			command.eal |= (state.eal >> 21) & 8; 
+			command.lsa = state.lsa * 16;
+			command.size = (state.size_plus_16 * 16) + 16;
+			command.size |= (state.eal >> 20) & 8; 
+			command.cmd = MFC(+state.cmd_type);
+			_this->do_list_transfer(command);
+		}
+		else
+		{
+			command.eal = state.eal * 16;
+			command.lsa = state.lsa * 16;
+			command.size = (state.size_plus_16 * 16) + 16;
+			command.cmd = MFC(+state.cmd_type);
+			_this->do_dma_transfer(_this, command, _this->ls);
+		}
+
+		_this->async_ch_mfc_cmd.fetch_op([&](async_cmd_t& state)
+		{
+			// Notify completion
+			state.cmd_state = async_cmd_state::done;
+		});
+	}
 }
