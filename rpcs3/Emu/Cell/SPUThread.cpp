@@ -1644,11 +1644,11 @@ std::string spu_thread::dump_misc() const
 	}
 
 	fmt::append(ret, "\nTag Mask: 0x%08x", ch_tag_mask);
-	fmt::append(ret, "\nMFC Queue Size: %u", mfc_size);
+	fmt::append(ret, "\nMFC Queue Size: %u", mfc_queue_size);
 
 	for (u32 i = 0; i < 16; i++)
 	{
-		if (i < mfc_size)
+		if (i < mfc_queue_size)
 		{
 			fmt::append(ret, "\n%s", mfc_queue[i]);
 		}
@@ -1707,7 +1707,7 @@ void spu_thread::cpu_init()
 	ch_mfc_cmd = {};
 
 	srr0 = 0;
-	mfc_size = 0;
+	mfc_queue_size = 0;
 	mfc_barrier = 0;
 	mfc_fence = 0;
 	ch_tag_upd = 0;
@@ -2020,13 +2020,13 @@ void spu_thread::cpu_work()
 	if (u32 shuffle_count = g_cfg.core.mfc_transfers_shuffling)
 	{
 		// If either MFC size exceeds limit or timeout has been reached execute pending MFC commands
-		if (mfc_size > shuffle_count || (timeout && get_system_time() - mfc_last_timestamp >= timeout))
+		if (mfc_queue_size > shuffle_count || (timeout && get_system_time() - mfc_last_timestamp >= timeout))
 		{
 			work_left = do_mfc(false, false);
 		}
 		else
 		{
-			work_left = mfc_size != 0; // TODO: Optimize
+			work_left = mfc_queue_size != 0; // TODO: Optimize
 		}
 	}
 
@@ -2204,12 +2204,12 @@ spu_thread::spu_thread(lv2_spu_group* group, u32 index, std::string_view name, u
 
 void spu_thread::serialize_common(utils::serial& ar)
 {
-	ar(gpr, pc, ch_mfc_cmd, mfc_size, mfc_barrier, mfc_fence, mfc_prxy_cmd, mfc_prxy_mask, mfc_prxy_write_state.all
+	ar(gpr, pc, ch_mfc_cmd, mfc_queue_size, mfc_barrier, mfc_fence, mfc_prxy_cmd, mfc_prxy_mask, mfc_prxy_write_state.all
 		, srr0, ch_tag_upd, ch_tag_mask, ch_tag_stat.data, ch_stall_mask, ch_stall_stat.data, ch_atomic_stat.data
 		, ch_out_mbox.data, ch_out_intr_mbox.data, snr_config, ch_snr1.data, ch_snr2.data, ch_events.raw().all, interrupts_enabled
 		, run_ctrl, exit_status.data, status_npc.raw().status, ch_dec_start_timestamp, ch_dec_value, is_dec_frozen);
 
-	ar(std::span(mfc_queue, mfc_size));
+	ar(std::span(mfc_queue, mfc_queue_size));
 
 	u32 vals[4]{};
 
@@ -3194,7 +3194,7 @@ bool spu_thread::do_dma_check(const spu_mfc_cmd& args)
 			mfc_barrier = 0;
 			mfc_fence = 0;
 
-			for (u32 i = 0; i < mfc_size; i++)
+			for (u32 i = 0; i < mfc_queue_size; i++)
 			{
 				if ((mfc_queue[i].cmd & ~0xc) == MFC_BARRIER_CMD)
 				{
@@ -4229,6 +4229,12 @@ bool spu_thread::do_mfc(bool can_escape, bool must_finish)
 				return true;
 			}
 
+			if (args.tag == 0xff)
+			{
+				// For MFC_WrMSSyncReq
+				return false;
+			}
+
 			// Block all tags
 			barrier |= -1;
 			fence |= mask;
@@ -4303,7 +4309,7 @@ bool spu_thread::do_mfc(bool can_escape, bool must_finish)
 		return true;
 	};
 
-	auto get_exec_mask = [&size = mfc_size]
+	auto get_exec_mask = [&size = mfc_queue_size]
 	{
 		// Get commands' execution mask
 		// Mask bits are always set when mfc_transfers_shuffling is 0
@@ -4321,9 +4327,9 @@ bool spu_thread::do_mfc(bool can_escape, bool must_finish)
 		pending = false;
 		exec_mask = get_exec_mask();
 
-		static_cast<void>(std::remove_if(mfc_queue + 0, mfc_queue + mfc_size, process_command));
+		static_cast<void>(std::remove_if(mfc_queue + 0, mfc_queue + mfc_queue_size, process_command));
 
-		mfc_size -= removed;
+		mfc_queue_size -= removed;
 		mfc_barrier = barrier;
 		mfc_fence = fence;
 
@@ -4635,10 +4641,10 @@ u32 evaluate_spin_optimization(std::span<u8> stats, u64 evaluate_time, const cfg
 
 	if (stats.size() == 4)
 	{
-		add_count = zero_count == 3 && total_wait >= 9 ? (total_wait - 8) * 40
-			: zero_count == 2 && total_wait >= 8 ? (total_wait - 7) * 40 
-			: zero_count == 1 && total_wait >= 7 ? (total_wait - 6) * 40
-			: zero_count == 0 && total_wait >= 4 ? (total_wait - 3) * 40
+		add_count = zero_count == 3 && total_wait >= 40 ? (total_wait - 39) * 40
+			: zero_count == 2 && total_wait >= 11 ? (total_wait - 10) * 40
+			: zero_count == 1 && total_wait >= 8 ? (total_wait - 7) * 40
+			: zero_count == 0 && total_wait >= 6 ? (total_wait - 5) * 40
 			: 0;
 	}
 	else
@@ -4692,7 +4698,7 @@ u32 evaluate_spin_optimization(std::span<u8> stats, u64 evaluate_time, const cfg
 bool spu_thread::process_mfc_cmd()
 {
 	// Stall infinitely if MFC queue is full
-	while (mfc_size >= 16) [[unlikely]]
+	while (mfc_queue_size >= 16) [[unlikely]]
 	{
 		// Reset MFC timestamp in the case of full queue
 		mfc_last_timestamp = 0;
@@ -4705,7 +4711,7 @@ bool spu_thread::process_mfc_cmd()
 		// Process MFC commands
 		do_mfc();
 
-		if (mfc_size < 16)
+		if (mfc_queue_size < 16)
 		{
 			break;
 		}
@@ -5323,7 +5329,7 @@ bool spu_thread::process_mfc_cmd()
 
 		if ((mfc_barrier | mfc_fence) & mask) [[unlikely]]
 		{
-			mfc_queue[mfc_size++] = ch_mfc_cmd;
+			mfc_queue[mfc_queue_size++] = ch_mfc_cmd;
 			mfc_fence |= mask;
 		}
 		else
@@ -5373,7 +5379,7 @@ bool spu_thread::process_mfc_cmd()
 					mfc_last_timestamp = get_system_time();
 			}
 
-			mfc_queue[mfc_size++] = ch_mfc_cmd;
+			mfc_queue[mfc_queue_size++] = ch_mfc_cmd;
 			mfc_fence |= utils::rol32(1, ch_mfc_cmd.tag);
 
 			if (ch_mfc_cmd.cmd & MFC_BARRIER_MASK)
@@ -5398,7 +5404,7 @@ bool spu_thread::process_mfc_cmd()
 	{
 		if (ch_mfc_cmd.size <= 0x4000) [[likely]]
 		{
-			auto& cmd = mfc_queue[mfc_size];
+			auto& cmd = mfc_queue[mfc_queue_size];
 			cmd = ch_mfc_cmd;
 
 			//if (g_cfg.core.mfc_debug)
@@ -5426,7 +5432,7 @@ bool spu_thread::process_mfc_cmd()
 				}
 			}
 
-			mfc_size++;
+			mfc_queue_size++;
 			mfc_fence |= utils::rol32(1, cmd.tag);
 
 			if (cmd.cmd & MFC_BARRIER_MASK)
@@ -5449,13 +5455,13 @@ bool spu_thread::process_mfc_cmd()
 	case MFC_EIEIO_CMD:
 	case MFC_SYNC_CMD:
 	{
-		if (mfc_size == 0)
+		if (mfc_queue_size == 0)
 		{
 			atomic_fence_seq_cst();
 		}
 		else
 		{
-			mfc_queue[mfc_size++] = ch_mfc_cmd;
+			mfc_queue[mfc_queue_size++] = ch_mfc_cmd;
 			mfc_barrier |= -1;
 			mfc_fence |= utils::rol32(1, ch_mfc_cmd.tag);
 		}
@@ -5837,7 +5843,8 @@ u32 spu_thread::get_ch_count(u32 ch)
 	case SPU_RdSigNotify2:    return ch_snr2.get_count();
 	case MFC_RdAtomicStat:    return ch_atomic_stat.get_count();
 	case SPU_RdEventStat:     return static_cast<u32>(get_events().count);
-	case MFC_Cmd:             return 16 - mfc_size;
+	case MFC_Cmd:             return 16 - mfc_queue_size - mfc_in_mssync;
+	case MFC_WrMSSyncReq:     return mfc_in_mssync ? 1 : 0;
 
 	// Channels with a constant count of 1:
 	case SPU_WrEventMask:
@@ -6722,6 +6729,36 @@ bool spu_thread::set_ch_value(u32 ch, u32 value)
 		return true;
 	}
 
+	case MFC_WrMSSyncReq:
+	{
+		while (mfc_in_mssync)
+		{
+			const auto state0 = +state;
+
+			if (is_stopped(state0))
+			{
+				state += cpu_flag::again;
+				return false;
+			}
+
+			if (is_paused(state0))
+			{
+				state.wait(state0);
+				continue;
+			}
+
+ 			do_mfc();
+
+			thread_ctrl::wait_for(1000);
+		}
+
+
+		spu_mfc_cmd fake_cmd{};
+		fake_cmd.cmd = MFC_BARRIER_CMD;
+		fake_cmd.tag = 0xff;
+
+		mfc_in_mssync = 1;
+	}
 	case MFC_WrTagMask:
 	{
 		ch_tag_mask = value;
@@ -6824,7 +6861,7 @@ bool spu_thread::set_ch_value(u32 ch, u32 value)
 		{
 			ch_stall_mask &= ~tag_mask;
 
-			for (u32 i = 0; i < mfc_size; i++)
+			for (u32 i = 0; i < mfc_queue_size; i++)
 			{
 				if (mfc_queue[i].tag == (value | 0x80))
 				{

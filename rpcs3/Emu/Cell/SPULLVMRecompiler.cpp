@@ -564,7 +564,7 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 			return get_type<u32>();
 		case s_reg_mfc_tag:
 			return get_type<u8>();
-		case s_reg_mfc_size:
+		case s_reg_mfc_queue_size:
 			return get_type<u16>();
 		default:
 			fmt::throw_exception("get_reg_type(%u): invalid register index", index);
@@ -583,7 +583,7 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 		case s_reg_mfc_eal: return ::offset32(&spu_thread::ch_mfc_cmd, &spu_mfc_cmd::eal);
 		case s_reg_mfc_lsa: return ::offset32(&spu_thread::ch_mfc_cmd, &spu_mfc_cmd::lsa);
 		case s_reg_mfc_tag: return ::offset32(&spu_thread::ch_mfc_cmd, &spu_mfc_cmd::tag);
-		case s_reg_mfc_size: return ::offset32(&spu_thread::ch_mfc_cmd, &spu_mfc_cmd::size);
+		case s_reg_mfc_queue_size: return ::offset32(&spu_thread::ch_mfc_cmd, &spu_mfc_cmd::size);
 		default:
 			fmt::throw_exception("get_reg_offset(%u): invalid register index", index);
 		}
@@ -1086,7 +1086,7 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 		m_block->store_context_ctr[s_reg_mfc_eal]++;
 		m_block->store_context_ctr[s_reg_mfc_lsa]++;
 		m_block->store_context_ctr[s_reg_mfc_tag]++;
-		m_block->store_context_ctr[s_reg_mfc_size]++;
+		m_block->store_context_ctr[s_reg_mfc_queue_size]++;
 
 		static const auto on_fail = [](spu_thread* _spu, u32 addr)
 		{
@@ -1379,7 +1379,7 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 		m_block->store_context_ctr[s_reg_mfc_eal]++;
 		m_block->store_context_ctr[s_reg_mfc_lsa]++;
 		m_block->store_context_ctr[s_reg_mfc_tag]++;
-		m_block->store_context_ctr[s_reg_mfc_size]++;
+		m_block->store_context_ctr[s_reg_mfc_queue_size]++;
 
 		static const auto on_fail = [](spu_thread* _spu, u32 addr)
 		{
@@ -3741,7 +3741,7 @@ public:
 		}
 		case MFC_Cmd:
 		{
-			res.value = m_ir->CreateLoad(get_type<u32>(), spu_ptr(&spu_thread::mfc_size));
+			res.value = m_ir->CreateLoad(get_type<u32>(), spu_ptr(&spu_thread::mfc_queue_size));
 			res.value = m_ir->CreateSub(m_ir->getInt32(16), res.value);
 			break;
 		}
@@ -3808,7 +3808,7 @@ public:
 
 	static void exec_list_unstall(spu_thread* _spu, u32 tag)
 	{
-		for (u32 i = 0; i < _spu->mfc_size; i++)
+		for (u32 i = 0; i < _spu->mfc_queue_size; i++)
 		{
 			if (_spu->mfc_queue[i].tag == (tag | 0x80))
 			{
@@ -3952,7 +3952,7 @@ public:
 		}
 		case MFC_Size:
 		{
-			set_reg_fixed(s_reg_mfc_size, trunc<u16>(val).eval(m_ir));
+			set_reg_fixed(s_reg_mfc_queue_size, trunc<u16>(val).eval(m_ir));
 			return;
 		}
 		case MFC_TagID:
@@ -3966,7 +3966,7 @@ public:
 			m_block->store_context_ctr[s_reg_mfc_eal]++;
 			m_block->store_context_ctr[s_reg_mfc_lsa]++;
 			m_block->store_context_ctr[s_reg_mfc_tag]++;
-			m_block->store_context_ctr[s_reg_mfc_size]++;
+			m_block->store_context_ctr[s_reg_mfc_queue_size]++;
 
 			if (auto ci = llvm::dyn_cast<llvm::ConstantInt>(trunc<u8>(val).eval(m_ir)))
 			{
@@ -3990,7 +3990,7 @@ public:
 				const auto lsa = get_reg_fixed<u32>(s_reg_mfc_lsa);
 				const auto tag = get_reg_fixed<u8>(s_reg_mfc_tag);
 
-				const auto size = get_reg_fixed<u16>(s_reg_mfc_size);
+				const auto size = get_reg_fixed<u16>(s_reg_mfc_queue_size);
 				const auto mask = m_ir->CreateShl(m_ir->getInt32(1), zext<u32>(tag).eval(m_ir));
 				const auto exec = llvm::BasicBlock::Create(m_context, "", m_function);
 				const auto fail = llvm::BasicBlock::Create(m_context, "", m_function);
@@ -4201,7 +4201,7 @@ public:
 				case MFC_EIEIO_CMD:
 				case MFC_SYNC_CMD:
 				{
-					const auto cond = m_ir->CreateIsNull(m_ir->CreateLoad(get_type<u32>(), spu_ptr(&spu_thread::mfc_size)));
+					const auto cond = m_ir->CreateIsNull(m_ir->CreateLoad(get_type<u32>(), spu_ptr(&spu_thread::mfc_queue_size)));
 					m_ir->CreateCondBr(cond, exec, fail, m_md_likely);
 					m_ir->SetInsertPoint(exec);
 					m_ir->CreateFence(llvm::AtomicOrdering::SequentiallyConsistent);
@@ -4223,7 +4223,7 @@ public:
 				m_ir->SetInsertPoint(fail);
 
 				// Get MFC slot, redirect to invalid memory address
-				const auto slot = m_ir->CreateLoad(get_type<u32>(), spu_ptr(&spu_thread::mfc_size));
+				const auto slot = m_ir->CreateLoad(get_type<u32>(), spu_ptr(&spu_thread::mfc_queue_size));
 				const auto off0 = m_ir->CreateAdd(m_ir->CreateMul(slot, m_ir->getInt32(sizeof(spu_mfc_cmd))), m_ir->getInt32(::offset32(&spu_thread::mfc_queue)));
 				const auto ptr0 = _ptr(m_thread, m_ir->CreateZExt(off0, get_type<u64>()));
 				const auto ptr1 = _ptr(m_memptr, 0xffdeadf0);
@@ -4292,7 +4292,7 @@ public:
 				}
 				}
 
-				m_ir->CreateStore(m_ir->CreateAdd(slot, m_ir->getInt32(1)), spu_ptr(&spu_thread::mfc_size));
+				m_ir->CreateStore(m_ir->CreateAdd(slot, m_ir->getInt32(1)), spu_ptr(&spu_thread::mfc_queue_size));
 				m_ir->CreateBr(next);
 				m_ir->SetInsertPoint(next);
 				return;
