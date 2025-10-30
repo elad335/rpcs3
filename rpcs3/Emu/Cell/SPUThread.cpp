@@ -4015,7 +4015,11 @@ bool spu_thread::do_putllc(const spu_mfc_cmd& args)
 	{
 		if (raddr)
 		{
-			if (raddr != spurs_addr || pc != 0x11e4)
+			if (utils::get_thread_count() >= 12u)
+			{
+				// Nothing
+			}
+			else if (raddr != spurs_addr || pc != 0x11e4)
 			{
 				vm::reservation_notifier_notify(addr, rtime);
 			}

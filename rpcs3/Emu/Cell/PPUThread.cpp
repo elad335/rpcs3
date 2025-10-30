@@ -3655,7 +3655,7 @@ static bool ppu_store_reservation(ppu_thread& ppu, u32 addr, u64 reg_value)
 		// Avoid notifications from lwmutex or sys_spinlock
 		const bool is_liblv2_or_null = (ppu.cia >= liblv2_begin && ppu.cia < liblv2_end);
 
-		if (!is_liblv2_or_null)
+		if (!is_liblv2_or_null && utils::get_thread_count() < 12u)
 		{
 			// Try to postpone notification to when PPU is asleep or join notifications on the same address
 			// This also optimizes a mutex - won't notify after lock is aqcuired (prolonging the critical section duration), only notifies on unlock
