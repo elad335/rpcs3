@@ -603,6 +603,247 @@ namespace vm
 		}
 	}
 
+	bool reservation_heavy_op(u32 addr, u32 size, u64 rtime, const void* rdata, const void* to_write, atomic_t<u64, 64>* range_lock, bool halt_ppus, bool(*reservation_func)(u32 addr, const void* rdata, const void* to_write))
+	{
+		usz wait_count = 0;
+
+		while (true)
+		{
+			if (wait_count)
+			{
+				const auto data_ptr = vm::get_super_ptr(addr);
+
+				if (size == 16)
+				{
+					if (std::memcpy(data_ptr, static_cast<const u8*>(rdata) + addr % 128, 16))
+					{
+						return false;
+					}
+				}
+				else
+				{
+					const u64 stamp = vm::reservation_acquire(addr);
+
+					if (stamp / 128 != rtime / 128)
+					{
+						return false;
+					}
+				}
+
+				if (true || wait_count < 100)
+				{
+					busy_wait(200);
+				}
+				else
+				{
+					std::this_thread::yield();
+				}
+			}
+
+			const u64 stamp = vm::reservation_acquire(addr);
+
+			if (stamp != rtime)
+			{
+				if (size == 16)
+				{
+					rtime = stamp & -128;
+					wait_count++;
+					continue;
+				}
+				else
+				{
+					return false;
+				}
+			}
+
+			auto& bits = get_range_lock_bits(true);
+
+			const auto bit_to_set = static_cast<u32>(range_lock - g_range_lock_set);
+
+			if (bits & (1ull << bit_to_set))
+			{
+				wait_count++;
+				continue;
+			}
+
+			{
+				u64 addr1 = addr;
+
+				if (u64 is_shared = g_shmem[addr >> 16]) [[unlikely]]
+				{
+					// Reservation address in shareable memory range
+					addr1 = static_cast<u16>(addr) | is_shared;
+				}
+
+				u64 to_clear = get_range_lock_bits(false);
+
+				u64 point = addr1 / 128;
+
+				while (true)
+				{
+					to_clear = for_all_range_locks(to_clear & ~get_range_lock_bits(true), [&](u64 addr2, u32 size2)
+					{
+						constexpr u32 range_size_loc = vm::range_pos - 32;
+
+						if ((size2 >> range_size_loc) == (vm::range_readable >> vm::range_pos))
+						{
+							return 0;
+						}
+
+						// Split and check every 64K page separately
+						for (u64 hi = addr2 >> 16, max = (addr2 + size2 - 1) >> 16; hi <= max; hi++)
+						{
+							u64 addr3 = addr2;
+							u64 size3 = std::min<u64>(addr2 + size2, utils::align(addr2, 0x10000)) - addr2;
+
+							if (u64 is_shared = g_shmem[hi]) [[unlikely]]
+							{
+								addr3 = static_cast<u16>(addr2) | is_shared;
+							}
+
+							if (point - (addr3 / 128) <= (addr3 + size3 - 1) / 128 - (addr3 / 128)) [[unlikely]]
+							{
+								return 1;
+							}
+
+							addr2 += size3;
+							size2 -= static_cast<u32>(size3);
+						}
+
+						return 0;
+					});
+
+					if (to_clear) [[unlikely]]
+					{
+						wait_count++;
+						continue;
+					}
+				}
+			}
+
+			// Lock reservation stamp and range lock
+			range_lock->release(addr | u64{128} << 32 | vm::range_locked);
+
+			auto [_oldd, res_lock_ok] = vm::reservation_acquire(addr).fetch_op([&](u64& r)
+			{
+				if ((r & -128) != rtime || (r & 127))
+				{
+					return false;
+				}
+
+				r += vm::rsrv_unique_lock;
+				return true;
+			});
+
+			if (!res_lock_ok || bits.bit_test_set(bit_to_set))
+			{
+				// Either failed
+				if (res_lock_ok)
+				{
+					vm::reservation_acquire(addr) -= vm::rsrv_unique_lock;
+				}
+
+				range_lock->release(0);
+				wait_count++;
+				continue;
+			}
+
+			{
+				u64 addr1 = addr;
+
+				if (u64 is_shared = g_shmem[addr >> 16]) [[unlikely]]
+				{
+					// Reservation address in shareable memory range
+					addr1 = static_cast<u16>(addr) | is_shared;
+				}
+
+				u64 to_clear = get_range_lock_bits(false);
+
+				u64 point = addr1 / 128;
+
+				while (true)
+				{
+					to_clear = for_all_range_locks(to_clear & ~get_range_lock_bits(true), [&](u64 addr2, u32 size2)
+					{
+						constexpr u32 range_size_loc = vm::range_pos - 32;
+
+						if ((size2 >> range_size_loc) == (vm::range_readable >> vm::range_pos))
+						{
+							return 0;
+						}
+
+						// Split and check every 64K page separately
+						for (u64 hi = addr2 >> 16, max = (addr2 + size2 - 1) >> 16; hi <= max; hi++)
+						{
+							u64 addr3 = addr2;
+							u64 size3 = std::min<u64>(addr2 + size2, utils::align(addr2, 0x10000)) - addr2;
+
+							if (u64 is_shared = g_shmem[hi]) [[unlikely]]
+							{
+								addr3 = static_cast<u16>(addr2) | is_shared;
+							}
+
+							if (point - (addr3 / 128) <= (addr3 + size3 - 1) / 128 - (addr3 / 128)) [[unlikely]]
+							{
+								return 1;
+							}
+
+							addr2 += size3;
+							size2 -= static_cast<u32>(size3);
+						}
+
+						return 0;
+					});
+
+					if (to_clear) [[unlikely]]
+					{
+						vm::reservation_acquire(addr) -= vm::rsrv_unique_lock;
+						range_lock->release(0);
+						wait_count++;
+						continue;
+					}
+				}
+			}
+
+			if (size != 16 || halt_ppus)
+			{
+				for (auto lock = g_locks.cbegin(), end = lock + g_cfg.core.ppu_threads; lock != end; lock++)
+				{
+					if (auto ptr = +*lock; ptr && ptr->state.none_of(cpu_flag::wait + cpu_flag::memory))
+					{
+						ptr->state.test_and_set(cpu_flag::memory);
+					}
+				}
+
+				for (auto lock = g_locks.cbegin(), end = lock + g_cfg.core.ppu_threads; lock != end; lock++)
+				{
+					if (auto ptr = +*lock)
+					{
+						while (!(ptr->state & cpu_flag::wait))
+						{
+							utils::pause();
+						}
+					}
+				}
+			}
+
+			const bool success = (*reservation_func)(addr, rdata, to_write);
+
+			if (success)
+			{
+				vm::reservation_acquire(addr) += vm::rsrv_unique_lock;
+			}
+			else
+			{
+				vm::reservation_acquire(addr) -= vm::rsrv_unique_lock;
+			}
+
+			bits &= ~(1ull << bit_to_set);
+			range_lock->release(0);
+			return success;
+		}
+	}
+
 	atomic_t<u32>* reservation_notifier_notify(u32 raddr, u64 rtime, bool postpone)
 	{
 		const auto waiter = reservation_notifier(raddr, rtime);

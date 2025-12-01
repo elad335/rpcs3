@@ -99,4 +99,6 @@ namespace vm
 		writer_lock(u32 addr, atomic_t<u64, 64>* range_lock = nullptr, u32 size = 128, u64 flags = range_locked) noexcept;
 		~writer_lock() noexcept;
 	};
+
+	bool reservation_heavy_op(u32 addr, u32 size, u64 rtime, const void* rdata, const void* to_write, atomic_t<u64, 64>* range_lock, bool halt_ppus, bool(*reservation_func)( u32 addr, const void* rdata, const void* to_write));
 } // namespace vm

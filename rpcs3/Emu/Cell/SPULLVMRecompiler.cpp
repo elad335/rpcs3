@@ -64,6 +64,10 @@ const extern spu_decoder<spu_iflag> g_spu_iflag;
 #include "Emu/CPU/Backends/AArch64/AArch64JIT.h"
 #endif
 
+using spu_rdata_t = decltype(spu_thread::rdata);
+extern void mov_rdata(spu_rdata_t& _dst, const spu_rdata_t& _src);
+extern bool cmp_rdata(const spu_rdata_t& _lhs, const spu_rdata_t& _rhs);
+
 class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 {
 	// JIT Instance
@@ -1197,197 +1201,100 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 			dest = m_ir->CreateAnd(m_ir->CreateAdd(get_reg32(info.reg), get_reg32(info.reg2)), 0x3fff0);
 		}
 
-		if (g_cfg.core.rsx_accurate_res_access)
+		const auto success = call("spu_putllc16_rsx_res", +[](spu_thread* _spu, u32 ls_dst, u32 lsa, u32 eal, u32 notify) -> bool
 		{
-			const auto success = call("spu_putllc16_rsx_res", +[](spu_thread* _spu, u32 ls_dst, u32 lsa, u32 eal, u32 notify) -> bool
+			const u32 raddr = eal;
+
+			const v128 rdata = read_from_ptr<v128>(_spu->rdata, ls_dst % 0x80);
+			const v128 to_write = _spu->_ref<const nse_t<v128>>(ls_dst);
+
+			const auto dest = raddr | (ls_dst & 127);
+			ensure(dest % 16 == 0);
+
+			if (rdata == to_write)
 			{
-				const u32 raddr = eal;
+				vm::reservation_update(raddr);
+				_spu->ch_atomic_stat.set_value(MFC_PUTLLC_SUCCESS);
+				_spu->raddr = 0;
+				return true;
+			}
 
-				const v128 rdata = read_from_ptr<v128>(_spu->rdata, ls_dst % 0x80);
-				const v128 to_write = _spu->_ref<const nse_t<v128>>(ls_dst);
+			ensure(((lsa ^ ls_dst) & (SPU_LS_SIZE - 128)) == 0);
 
-				const auto dest = raddr | (ls_dst & 127);
-				const auto _dest = vm::get_super_ptr<atomic_t<nse_t<v128>>>(dest);
+			auto& res = vm::reservation_acquire(eal);
 
-				if (rdata == to_write || ((lsa ^ ls_dst) & (SPU_LS_SIZE - 128)))
+			{
+				rsx::reservation_lock rsx_lock(raddr, 128);
+
+				// Touch memory
+				utils::trigger_write_page_fault(vm::base(dest ^ (4096 / 2)));
+
+				const bool success = vm::reservation_heavy_op(dest, 16, _spu->rtime, _spu->rdata, _spu->_ptr<void>(ls_dst & -128), _spu->range_lock, false, [](u32 dest, const void* _rdata0, const void* _to_write0) -> bool
 				{
-					vm::reservation_update(raddr);
-					_spu->ch_atomic_stat.set_value(MFC_PUTLLC_SUCCESS);
-					_spu->raddr = 0;
-					return true;
-				}
+					const auto dest_128 = vm::get_super_ptr<const spu_rdata_t>(dest & -128);
+					const auto& _rdata = *static_cast<const spu_rdata_t*>(_rdata0);
+					auto& _to_write = const_cast<spu_rdata_t&>(*static_cast<const spu_rdata_t*>(_to_write0));
 
-				auto& res = vm::reservation_acquire(eal);
+					spu_rdata_t observed;
 
-				if (res % 128)
-				{
-					return false;
-				}
-
-				{
-					rsx::reservation_lock rsx_lock(raddr, 128);
-
-					// Touch memory
-					utils::trigger_write_page_fault(vm::base(dest ^ (4096 / 2)));
-
-					auto [old_res, ok] = res.fetch_op([&](u64& rval)
+					for (u32 i = 0; i < 3; i++)
 					{
-						if (rval % 128)
+						// Try to replace GETLLAR data with data observed here
+						// Which is actually more accurate because of the SPU DMA lock
+						mov_rdata(observed, *dest_128);
+
+						// Atomically..
+						if (cmp_rdata(observed, _rdata))
 						{
+							const auto dest_16 = vm::get_super_ptr<atomic_t<nse_t<v128>>>(dest);
+							const v128 rdata = read_from_ptr<v128>(_rdata, dest % 0x80);
+							const v128 to_write = read_from_ptr<v128>(_to_write, dest % 0x80);
+
+							// Write and compare 16 bytes of destination data
+							if (dest_16->compare_and_swap_test(rdata, to_write))
+							{
+								// Update LS
+								mov_rdata(_to_write, observed);
+								write_to_ptr<v128>(_to_write, dest % 0x80, to_write);
+
+								// Success
+								return true;
+							}
+
 							return false;
 						}
 
-						rval |= 127;
-						return true;
-					});
+						if (std::memcmp(observed + dest % 0x80, _rdata + dest % 0x80, 16))
+						{
+							// Destination 16 bytes compariosn failure
+							return false;
+						}
 
-					if (!ok)
-					{
-						return false;
+						// Try to recover
 					}
 
-					if (!_dest->compare_and_swap_test(rdata, to_write))
-					{
-						res.release(old_res);
-						return false;
-					}
+					return false;
+				});
 
-					// Success
-					res.release(old_res + 128);
-				}
-
-				_spu->ch_atomic_stat.set_value(MFC_PUTLLC_SUCCESS);
-				_spu->raddr = 0;
-
-				if (notify)
+				if (!success)
 				{
-					res.notify_all();
+					return false;
 				}
+			}
 
-				return true;
-			}, m_thread, dest, _lsa, _eal, m_ir->getInt32(!info.no_notify));
+			_spu->ch_atomic_stat.set_value(MFC_PUTLLC_SUCCESS);
+			_spu->raddr = 0;
+
+			if (notify)
+			{
+				res.notify_all();
+			}
+
+			return true;
+		}, m_thread, dest, _lsa, _eal, m_ir->getInt32(!info.no_notify));
 
 
-			m_ir->CreateCondBr(success, _final, _fail);
-
-			m_ir->SetInsertPoint(_fail);
-			call("PUTLLC16_fail", +on_fail, m_thread, _eal);
-			m_ir->CreateStore(m_ir->getInt64(spu_channel::bit_count | MFC_PUTLLC_FAILURE), spu_ptr(&spu_thread::ch_atomic_stat));
-			m_ir->CreateBr(_final);
-
-			m_ir->SetInsertPoint(_final);
-			return;
-		}
-
-		const auto diff = m_ir->CreateZExt(m_ir->CreateSub(dest, _lsa), get_type<u64>());
-
-		const auto _new = m_ir->CreateAlignedLoad(get_type<u128>(), _ptr(m_lsptr, dest), llvm::MaybeAlign{16});
-		const auto _rdata = m_ir->CreateAlignedLoad(get_type<u128>(), _ptr(spu_ptr(&spu_thread::rdata), m_ir->CreateAnd(diff, 0x70)), llvm::MaybeAlign{16});
-
-		const bool is_accurate_op = true || !!g_cfg.core.spu_accurate_reservations;
-
-		const auto compare_data_change_res = m_ir->CreateICmpNE(_new, _rdata);
-		const auto second_test_for_complete_op = is_accurate_op ? m_ir->getTrue() : compare_data_change_res;
-
-		if (info.runtime16_select)
-		{
-			m_ir->CreateCondBr(m_ir->CreateAnd(m_ir->CreateICmpULT(diff, m_ir->getInt64(128)), second_test_for_complete_op), _begin_op, _inc_res, m_md_likely);
-		}
-		else
-		{
-			m_ir->CreateCondBr(second_test_for_complete_op, _begin_op, _inc_res, m_md_unlikely);
-		}
-
-		m_ir->SetInsertPoint(_begin_op);
-
-		// Touch memory (on the opposite side of the page)
-		m_ir->CreateAtomicRMW(llvm::AtomicRMWInst::Or, _ptr(m_memptr, m_ir->CreateXor(_eal, 4096 / 2)), m_ir->getInt8(0), llvm::MaybeAlign{16}, llvm::AtomicOrdering::SequentiallyConsistent);
-
-		const auto rptr = _ptr(m_ir->CreateLoad(get_type<u8*>(), spu_ptr(&spu_thread::reserv_base_addr)), ((eal_val & 0xff80) >> 1).eval(m_ir));
-		const auto rtime = m_ir->CreateLoad(get_type<u64>(), spu_ptr(&spu_thread::rtime));
-
-		m_ir->CreateBr(_repeat_lock);
-		m_ir->SetInsertPoint(_repeat_lock);
-
-		const auto rval = m_ir->CreatePHI(get_type<u64>(), 2);
-		rval->addIncoming(rtime, _begin_op);
-
-		// Lock reservation
-		const auto cmp_res = m_ir->CreateAtomicCmpXchg(rptr, rval, m_ir->CreateOr(rval, 0x7f), llvm::MaybeAlign{16}, llvm::AtomicOrdering::SequentiallyConsistent, llvm::AtomicOrdering::SequentiallyConsistent);
-
-		m_ir->CreateCondBr(m_ir->CreateExtractValue(cmp_res, 1), _lock_success, _repeat_lock_fail, m_md_likely);
-
-		m_ir->SetInsertPoint(_repeat_lock_fail);
-
-		const auto last_rval = m_ir->CreateExtractValue(cmp_res, 0);
-		rval->addIncoming(last_rval, _repeat_lock_fail);
-
-		m_ir->CreateCondBr(is_accurate_op ? m_ir->CreateICmpEQ(last_rval, rval) : m_ir->CreateIsNull(m_ir->CreateAnd(last_rval, 0x7f)), _repeat_lock, _fail);
-
-		m_ir->SetInsertPoint(_lock_success);
-
-		// Commit 16 bytes compare-exchange
-		const auto sudo_ptr = _ptr(m_ir->CreateLoad(get_type<u8*>(), spu_ptr(&spu_thread::memory_sudo_addr)), _eal);
-
-		m_ir->CreateCondBr(
-			m_ir->CreateExtractValue(m_ir->CreateAtomicCmpXchg(_ptr(sudo_ptr, diff), _rdata, _new, llvm::MaybeAlign{16}, llvm::AtomicOrdering::SequentiallyConsistent, llvm::AtomicOrdering::SequentiallyConsistent), 1)
-			, _success_and_unlock
-			, _fail_and_unlock);
-
-		// Unlock and notify
-		m_ir->SetInsertPoint(_success_and_unlock);
-		m_ir->CreateAlignedStore(m_ir->CreateAdd(rval, m_ir->getInt64(128)), rptr, llvm::MaybeAlign{8});
-
-		if (!info.no_notify)
-		{
-			const auto notify_block = llvm::BasicBlock::Create(m_context, "__putllc16_block_notify", m_function);
-			const auto notify_next = llvm::BasicBlock::Create(m_context, "__putllc16_block_notify_next", m_function);
-
-			m_ir->CreateCondBr(compare_data_change_res, notify_block, notify_next);
-			m_ir->SetInsertPoint(notify_block);
-			call("atomic_wait_engine::notify_all", static_cast<void(*)(const void*)>(atomic_wait_engine::notify_all), rptr);
-			m_ir->CreateBr(notify_next);
-			m_ir->SetInsertPoint(notify_next);
-		}
-
-		m_ir->CreateBr(_success);
-
-		// Perform unlocked vm::reservation_update if no physical memory changes needed
-		m_ir->SetInsertPoint(_inc_res);
-		const auto rptr2 = _ptr(m_ir->CreateLoad(get_type<u8*>(), spu_ptr(&spu_thread::reserv_base_addr)), ((eal_val & 0xff80) >> 1).eval(m_ir));
-
-		llvm::Value* old_val{};
-
-		if (true || is_accurate_op)
-		{
-			old_val = m_ir->CreateLoad(get_type<u64>(), spu_ptr(&spu_thread::rtime));
-		}
-		else
-		{
-			old_val = m_ir->CreateAlignedLoad(get_type<u64>(), rptr2, llvm::MaybeAlign{8});
-			m_ir->CreateCondBr(m_ir->CreateIsNotNull(m_ir->CreateAnd(old_val, 0x7f)), _success, _inc_res_unlocked);
-			m_ir->SetInsertPoint(_inc_res_unlocked);
-		}
-
-		const auto cmp_res2 = m_ir->CreateAtomicCmpXchg(rptr2, old_val, m_ir->CreateAdd(old_val, m_ir->getInt64(128)), llvm::MaybeAlign{16}, llvm::AtomicOrdering::SequentiallyConsistent, llvm::AtomicOrdering::SequentiallyConsistent);
-
-		if (true || is_accurate_op)
-		{
-			m_ir->CreateCondBr(m_ir->CreateExtractValue(cmp_res2, 1), _success, _fail);
-		}
-		else
-		{
-			m_ir->CreateBr(_success);
-		}
-
-		m_ir->SetInsertPoint(_success);
-		m_ir->CreateStore(m_ir->getInt64(spu_channel::bit_count | MFC_PUTLLC_SUCCESS), spu_ptr(&spu_thread::ch_atomic_stat));
-		m_ir->CreateStore(m_ir->getInt32(0), spu_ptr(&spu_thread::raddr));
-		m_ir->CreateBr(_final);
-
-		m_ir->SetInsertPoint(_fail_and_unlock);
-		m_ir->CreateAlignedStore(rval, rptr, llvm::MaybeAlign{8});
-		m_ir->CreateBr(_fail);
+		m_ir->CreateCondBr(success, _final, _fail);
 
 		m_ir->SetInsertPoint(_fail);
 		call("PUTLLC16_fail", +on_fail, m_thread, _eal);

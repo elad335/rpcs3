@@ -5120,7 +5120,7 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point, s
 		target_count += loc.size();
 	}
 
-	const bool should_search_patterns = target_count < 300u;
+	const bool should_search_patterns = target_count < 500u;
 
 	// Treat start of function as an unknown value with tag (because it is)
 	const reg_state_t start_program_count = reg_state_t::make_unknown(entry_point - 1);
