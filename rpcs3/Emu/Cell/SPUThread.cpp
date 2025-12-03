@@ -3286,30 +3286,30 @@ bool spu_thread::do_putllc(const spu_mfc_cmd& args)
 
 		const usz diff16_pos = scan16_rdata(to_write, rdata);
 
-		auto [_oldd, _ok] = res.fetch_op([&](u64& r)
-		{
-			if ((r & -128) != rtime || (r & 127))
-			{
-				return false;
-			}
-
-			r += vm::rsrv_unique_lock;
-			return true;
-		});
-
-		if (!_ok)
-		{
-			// Already locked or updated: give up
-			return false;
-		}
-
 		if (!g_cfg.core.spu_accurate_reservations)
 		{
 			if (addr - spurs_addr <= 0x80)
 			{
-				mov_rdata(*vm::_ptr<spu_rdata_t>(addr), to_write);
-				res += 64;
-				return true;
+				auto [_oldd, _ok] = res.fetch_op([&](u64& r)
+				{
+					if ((r & -128) != rtime || (r & 127))
+					{
+						return false;
+					}
+
+					r += vm::rsrv_unique_lock;
+					return true;
+				});
+
+				if (_ok)
+				{
+					mov_rdata(*vm::_ptr<spu_rdata_t>(addr), to_write);
+					res += vm::rsrv_unique_lock;
+					return true;
+				}
+
+				res -= vm::rsrv_unique_lock;
+				return false;
 			}
 		}
 		else
@@ -3317,34 +3317,45 @@ bool spu_thread::do_putllc(const spu_mfc_cmd& args)
 			utils::trigger_write_page_fault(vm::base(addr));
 		}
 
-		auto& super_data = *vm::get_super_ptr<spu_rdata_t>(addr);
-		const bool success = [&]()
+		if (diff16_pos != umax)
 		{
-			// Full lock (heavyweight)
-			// TODO: vm::check_addr
-			vm::writer_lock lock(addr, range_lock);
-
-			if (cmp_rdata(rdata, super_data))
+			const bool success = vm::reservation_heavy_op(addr + diff16_pos * 16, 128, rtime, rdata, &to_write, range_lock, true, [](u32 dest, const void* _rdata0, const void* _to_write0) -> bool
 			{
-				if (diff16_pos != umax)
+				const auto dest_128 = vm::get_super_ptr<spu_rdata_t>(dest & -128);
+				const auto& _rdata = *static_cast<const spu_rdata_t*>(_rdata0);
+				auto& _to_write = const_cast<spu_rdata_t&>(*static_cast<const spu_rdata_t*>(_to_write0));
+				
+				if (cmp_rdata(_rdata, *dest_128))
 				{
-					// Do it with CMPXCHG16B if possible, this allows to improve accuracy whenever "RSX Accurate Reservations" is off 
-					if (atomic_storage<u128>::compare_exchange(*cast_as(super_data, diff16_pos), *cast_as(rdata, diff16_pos), *cast_as_const(to_write, diff16_pos)))
+					// Do it with CMPXCHG16B if possible, this allows to improve accuracy whenever "RSX Accurate Reservations" is off
+					u128 rdata = *cast_as_const(_rdata, (dest % 128) / 16);
+					if (atomic_storage<u128>::compare_exchange(*cast_as(dest_128, (dest % 128) / 16), rdata, *cast_as_const(_to_write, (dest % 128) / 16)))
 					{
 						return true;
 					}
 				}
-				else
-				{
-					mov_rdata(super_data, to_write);
-					return true;
-				}
+
+				return false;
+			});
+
+			return success;
+		}
+
+		const bool success = vm::reservation_heavy_op(addr, 128, rtime, rdata, &to_write, range_lock, true, [](u32 dest, const void* _rdata0, const void* _to_write0) -> bool
+		{
+			const auto dest_128 = vm::get_super_ptr<spu_rdata_t>(dest);
+			const auto& _rdata = *static_cast<const spu_rdata_t*>(_rdata0);
+			auto& _to_write = const_cast<spu_rdata_t&>(*static_cast<const spu_rdata_t*>(_to_write0));
+			
+			if (cmp_rdata(_rdata, *dest_128))
+			{
+				mov_rdata(*dest_128, _to_write);
+				return true;
 			}
 
 			return false;
-		}();
+		});
 
-		res += success ? 64 : 0 - 64;
 		return success;
 	}())
 	{

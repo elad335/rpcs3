@@ -679,54 +679,51 @@ namespace vm
 
 				u64 point = addr1 / 128;
 
-				while (true)
+				to_clear = for_all_range_locks(to_clear & ~get_range_lock_bits(true), [&](u64 addr2, u32 size2)
 				{
-					to_clear = for_all_range_locks(to_clear & ~get_range_lock_bits(true), [&](u64 addr2, u32 size2)
+					constexpr u32 range_size_loc = vm::range_pos - 32;
+
+					if ((size2 >> range_size_loc) == (vm::range_readable >> vm::range_pos))
 					{
-						constexpr u32 range_size_loc = vm::range_pos - 32;
-
-						if ((size2 >> range_size_loc) == (vm::range_readable >> vm::range_pos))
-						{
-							return 0;
-						}
-
-						// Split and check every 64K page separately
-						for (u64 hi = addr2 >> 16, max = (addr2 + size2 - 1) >> 16; hi <= max; hi++)
-						{
-							u64 addr3 = addr2;
-							u64 size3 = std::min<u64>(addr2 + size2, utils::align(addr2, 0x10000)) - addr2;
-
-							if (u64 is_shared = g_shmem[hi]) [[unlikely]]
-							{
-								addr3 = static_cast<u16>(addr2) | is_shared;
-							}
-
-							if (point - (addr3 / 128) <= (addr3 + size3 - 1) / 128 - (addr3 / 128)) [[unlikely]]
-							{
-								return 1;
-							}
-
-							addr2 += size3;
-							size2 -= static_cast<u32>(size3);
-						}
-
 						return 0;
-					});
-
-					if (to_clear) [[unlikely]]
-					{
-						wait_count++;
-						continue;
 					}
+
+					// Split and check every 64K page separately
+					for (u64 hi = addr2 >> 16, max = (addr2 + size2 - 1) >> 16; hi <= max; hi++)
+					{
+						u64 addr3 = addr2;
+						u64 size3 = std::min<u64>(addr2 + size2, utils::align(addr2, 0x10000)) - addr2;
+
+						if (u64 is_shared = g_shmem[hi]) [[unlikely]]
+						{
+							addr3 = static_cast<u16>(addr2) | is_shared;
+						}
+
+						if (point - (addr3 / 128) <= (addr3 + size3 - 1) / 128 - (addr3 / 128)) [[unlikely]]
+						{
+							return 1;
+						}
+
+						addr2 += size3;
+						size2 -= static_cast<u32>(size3);
+					}
+
+					return 0;
+				});
+
+				if (to_clear) [[unlikely]]
+				{
+					wait_count++;
+					continue;
 				}
 			}
 
 			// Lock reservation stamp and range lock
-			range_lock->release(addr | u64{128} << 32 | vm::range_locked);
+			range_lock->release((addr & -128) | u64{128} << 32 | vm::range_locked);
 
 			auto [_oldd, res_lock_ok] = vm::reservation_acquire(addr).fetch_op([&](u64& r)
 			{
-				if ((r & -128) != rtime || (r & 127))
+				if ((size != 16 && (r & -128) != rtime) || (r & 127))
 				{
 					return false;
 				}
@@ -735,15 +732,25 @@ namespace vm
 				return true;
 			});
 
+			if (size == 16 && res_lock_ok)
+			{
+				rtime = _oldd;
+			}
+
 			if (!res_lock_ok || bits.bit_test_set(bit_to_set))
 			{
 				// Either failed
+				range_lock->release(0);
+
 				if (res_lock_ok)
 				{
 					vm::reservation_acquire(addr) -= vm::rsrv_unique_lock;
 				}
+				else if (size != 16)
+				{
+					return false;
+				}
 
-				range_lock->release(0);
 				wait_count++;
 				continue;
 			}
@@ -761,47 +768,45 @@ namespace vm
 
 				u64 point = addr1 / 128;
 
-				while (true)
+				to_clear = for_all_range_locks(to_clear & ~get_range_lock_bits(true), [&](u64 addr2, u32 size2)
 				{
-					to_clear = for_all_range_locks(to_clear & ~get_range_lock_bits(true), [&](u64 addr2, u32 size2)
+					constexpr u32 range_size_loc = vm::range_pos - 32;
+
+					if ((size2 >> range_size_loc) == (vm::range_readable >> vm::range_pos))
 					{
-						constexpr u32 range_size_loc = vm::range_pos - 32;
-
-						if ((size2 >> range_size_loc) == (vm::range_readable >> vm::range_pos))
-						{
-							return 0;
-						}
-
-						// Split and check every 64K page separately
-						for (u64 hi = addr2 >> 16, max = (addr2 + size2 - 1) >> 16; hi <= max; hi++)
-						{
-							u64 addr3 = addr2;
-							u64 size3 = std::min<u64>(addr2 + size2, utils::align(addr2, 0x10000)) - addr2;
-
-							if (u64 is_shared = g_shmem[hi]) [[unlikely]]
-							{
-								addr3 = static_cast<u16>(addr2) | is_shared;
-							}
-
-							if (point - (addr3 / 128) <= (addr3 + size3 - 1) / 128 - (addr3 / 128)) [[unlikely]]
-							{
-								return 1;
-							}
-
-							addr2 += size3;
-							size2 -= static_cast<u32>(size3);
-						}
-
 						return 0;
-					});
-
-					if (to_clear) [[unlikely]]
-					{
-						vm::reservation_acquire(addr) -= vm::rsrv_unique_lock;
-						range_lock->release(0);
-						wait_count++;
-						continue;
 					}
+
+					// Split and check every 64K page separately
+					for (u64 hi = addr2 >> 16, max = (addr2 + size2 - 1) >> 16; hi <= max; hi++)
+					{
+						u64 addr3 = addr2;
+						u64 size3 = std::min<u64>(addr2 + size2, utils::align(addr2, 0x10000)) - addr2;
+
+						if (u64 is_shared = g_shmem[hi]) [[unlikely]]
+						{
+							addr3 = static_cast<u16>(addr2) | is_shared;
+						}
+
+						if (point - (addr3 / 128) <= (addr3 + size3 - 1) / 128 - (addr3 / 128)) [[unlikely]]
+						{
+							return 1;
+						}
+
+						addr2 += size3;
+						size2 -= static_cast<u32>(size3);
+					}
+
+					return 0;
+				});
+
+				if (to_clear) [[unlikely]]
+				{
+					bits &= ~(1ull << bit_to_set);
+					vm::reservation_acquire(addr) -= vm::rsrv_unique_lock;
+					range_lock->release(0);
+					wait_count++;
+					continue;
 				}
 			}
 
