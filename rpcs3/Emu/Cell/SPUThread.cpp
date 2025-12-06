@@ -2167,7 +2167,7 @@ void spu_thread::do_dma_transfer(spu_thread* _this, const spu_mfc_cmd& args, u8*
 				auto& res = vm::reservation_acquire(eal);
 
 				// Lock each bit corresponding to a byte being written, using some free space in reservation memory
-				auto* bits = utils::bless<atomic_t<u128>>(vm::g_reservations + ((eal & 0xff80) / 2 + 16));
+				auto* bits = utils::bless<atomic_t<u128>>(&vm::reservation_acquire(eal)) + 1;
 
 				// Get writing mask
 				const u128 wmask = (~u128{} << (eal & 127)) & (~u128{} >> (127 - ((eal + size0 - 1) & 127)));
@@ -3418,7 +3418,7 @@ void do_cell_atomic_128_store(u32 addr, const void* to_write)
 
 	{
 		auto& sdata = *vm::get_super_ptr<spu_rdata_t>(addr);
-		auto& res = *utils::bless<atomic_t<u128>>(vm::g_reservations + (addr & 0xff80) / 2);
+		auto& res = *utils::bless<atomic_t<u128>>(&vm::reservation_acquire(addr));
 
 		if (std::memcmp(static_cast<const u8*>(to_write), &sdata, 16) == 0 && std::memcmp(static_cast<const u8*>(to_write) + 64, &sdata[64], 16) == 0)
 		{
@@ -4140,6 +4140,7 @@ bool spu_thread::process_mfc_cmd()
 				{
 					mov_rdata(_ref<spu_rdata_t>(ch_mfc_cmd.lsa & 0x3ff80), rdata);
 					ch_atomic_stat.set_value(MFC_GETLLAR_SUCCESS);
+					reserv_ptr_addr = &res;
 
 					// Need to check twice for it to be accurate, the code is before and not after this check for:
 					// 1. Reduce time between reservation accesses so TSX panelty would be lowered
@@ -4411,7 +4412,10 @@ bool spu_thread::process_mfc_cmd()
 			}
 		}())
 		{
-			ntime = vm::reservation_acquire(addr);
+			auto& res = vm::reservation_acquire(addr);
+			reserv_ptr_addr = &res;
+
+			ntime = res;
 
 			if (ntime & 127)
 			{
@@ -4421,7 +4425,7 @@ bool spu_thread::process_mfc_cmd()
 
 			mov_rdata(rdata, data);
 
-			if (u64 time0 = vm::reservation_acquire(addr); ntime != time0)
+			if (u64 time0 = res; ntime != time0)
 			{
 				// Reservation data has been modified recently
 				if (time0 & vm::rsrv_unique_lock) i += 12;

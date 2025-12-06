@@ -7387,7 +7387,7 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point, s
 			value.reg2 = pattern.reg2;
 		}
 
-		bool allow_pattern = true;
+		bool allow_pattern = false;
 
 		if (g_cfg.core.spu_accurate_reservations)
 		{
@@ -7409,7 +7409,7 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point, s
 			allow_pattern = std::any_of(allowed_patterns.begin(), allowed_patterns.end(), FN(pattern_hash == x));
 		}
 
-		if (allow_pattern)
+		if (allow_pattern && 0)
 		{
 			add_pattern(false, inst_attr::putllc16, pattern.put_pc - result.entry_point, value.data);
 		}

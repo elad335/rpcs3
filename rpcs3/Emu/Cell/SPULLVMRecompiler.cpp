@@ -1303,7 +1303,7 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 		// Touch memory (on the opposite side of the page)
 		m_ir->CreateAtomicRMW(llvm::AtomicRMWInst::Or, _ptr(m_memptr, m_ir->CreateXor(_eal, 4096 / 2)), m_ir->getInt8(0), llvm::MaybeAlign{16}, llvm::AtomicOrdering::SequentiallyConsistent);
 
-		const auto rptr = _ptr(m_ir->CreateLoad(get_type<u8*>(), spu_ptr(&spu_thread::reserv_base_addr)), ((eal_val & 0xff80) >> 1).eval(m_ir));
+		const auto rptr = m_ir->CreateLoad(get_type<u8*>(), spu_ptr(&spu_thread::reserv_ptr_addr));
 		const auto rtime = m_ir->CreateLoad(get_type<u64>(), spu_ptr(&spu_thread::rtime));
 
 		m_ir->CreateBr(_repeat_lock);
@@ -1354,7 +1354,7 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 
 		// Perform unlocked vm::reservation_update if no physical memory changes needed
 		m_ir->SetInsertPoint(_inc_res);
-		const auto rptr2 = _ptr(m_ir->CreateLoad(get_type<u8*>(), spu_ptr(&spu_thread::reserv_base_addr)), ((eal_val & 0xff80) >> 1).eval(m_ir));
+		const auto rptr2 = m_ir->CreateLoad(get_type<u8*>(), spu_ptr(&spu_thread::reserv_ptr_addr));
 
 		llvm::Value* old_val{};
 
@@ -1464,7 +1464,7 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 		value_t<u32> eal_val;
 		eal_val.value = _eal;
 
-		const auto rptr = _ptr(m_ir->CreateLoad(get_type<u8*>(), spu_ptr(&spu_thread::reserv_base_addr)), ((eal_val & 0xff80) >> 1).eval(m_ir));
+		const auto rptr = m_ir->CreateLoad(get_type<u8*>(), spu_ptr(&spu_thread::reserv_ptr_addr));
 		const auto rval = m_ir->CreateLoad(get_type<u64>(), spu_ptr(&spu_thread::rtime));
 		m_ir->CreateCondBr(
 			m_ir->CreateExtractValue(m_ir->CreateAtomicCmpXchg(rptr, rval, m_ir->CreateAdd(rval, m_ir->getInt64(128)), llvm::MaybeAlign{16}, llvm::AtomicOrdering::SequentiallyConsistent, llvm::AtomicOrdering::SequentiallyConsistent), 1)

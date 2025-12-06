@@ -667,7 +667,7 @@ public:
 	// May be used by recompilers.
 	u8* memory_base_addr = vm::g_base_addr;
 	u8* memory_sudo_addr = vm::g_sudo_addr;
-	u8* reserv_base_addr = vm::g_reservations;
+	atomic_t<u64>* reserv_ptr_addr = nullptr;
 
 	// General-Purpose Registers
 	std::array<v128, 128> gpr{};

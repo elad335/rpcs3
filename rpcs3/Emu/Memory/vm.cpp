@@ -59,7 +59,8 @@ namespace vm
 	u8* const g_free_addr = g_stat_addr + 0x1'0000'0000;
 
 	// Reservation stats
-	alignas(4096) u8 g_reservations[65536 / 128 * 64]{0};
+	alignas(4096) u8 g_reservations[(1 << 24) / 128 * 32]{0};
+	alignas(4096) atomic_t<u8*> g_reservation_ptr[65536]{};
 
 	// Pointers to shared memory mirror or zeros for "normal" memory
 	alignas(4096) atomic_t<u64> g_shmem[65536]{0};
@@ -808,6 +809,12 @@ namespace vm
 			for (u32 i = addr / 65536; i < addr / 65536 + size / 65536; i++)
 			{
 				g_shmem[i].release(std::exchange(shm_self, shm_self + 0x10000));
+			}
+
+			// Map reservation info (sticky: no unmap on _page_unmap)
+			for (u32 i = addr, start = 0; start < size; i += 0x10000, start += 0x10000)
+			{
+				g_reservation_ptr[i / 65536].release(g_reservations + ((flags & preallocated ? i : start) / 4) % std::size(g_reservations));
 			}
 		}
 
@@ -2253,6 +2260,7 @@ namespace vm
 			std::memset(g_shmem, 0, sizeof(g_shmem));
 			std::memset(g_range_lock_set, 0, sizeof(g_range_lock_set));
 			std::memset(g_range_lock_bits, 0, sizeof(g_range_lock_bits));
+			std::fill(std::begin(g_reservation_ptr), std::end(g_reservation_ptr), +g_reservations);
 
 #ifdef _WIN32
 			utils::memory_release(g_hook_addr, 0x800000000);
