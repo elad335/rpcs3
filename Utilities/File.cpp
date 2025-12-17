@@ -455,31 +455,9 @@ namespace fs
 
 		u64 read(void* buffer, u64 count) override
 		{
-			u64 nread_sum = 0;
-
-			for (char* data = static_cast<char*>(buffer); count;)
-			{
-				const DWORD size = static_cast<DWORD>(std::min<u64>(count, DWORD{umax} & -4096));
-
-				DWORD nread = 0;
-				OVERLAPPED ovl{};
-				const u64 pos = m_pos;
-				ovl.Offset = DWORD(pos);
-				ovl.OffsetHigh = DWORD(pos >> 32);
-				ensure(ReadFile(m_handle, data, size, &nread, &ovl) || GetLastError() == ERROR_HANDLE_EOF); // "file::read"
-				nread_sum += nread;
-				m_pos += nread;
-
-				if (nread < size)
-				{
-					break;
-				}
-
-				count -= size;
-				data += size;
-			}
-
-			return nread_sum;
+			const u64 advance = read_at(m_pos, buffer, count);
+			m_pos += advance;
+			return advance;
 		}
 
 		u64 read_at(u64 offset, void* buffer, u64 count) override
@@ -546,9 +524,25 @@ namespace fs
 				fmt::throw_exception("Invalid whence (0x%x)", whence);
 			}
 
+			if (whence == fs::seek_cur)
+			{
+				auto [old, ok] = m_pos.fetch_op([offset](s64& m_pos)
+				{
+					m_pos += offset;
+					return m_pos >= 0;
+				});
+
+				if (!ok)
+				{
+					fs::g_tls_error = fs::error::inval;
+					return -1;
+				}
+
+				return old + offset;
+			}
+
 			const s64 new_pos =
 				whence == fs::seek_set ? offset :
-				whence == fs::seek_cur ? offset + m_pos :
 				whence == fs::seek_end ? offset + size() : -1;
 
 			if (new_pos < 0)
@@ -558,7 +552,7 @@ namespace fs
 			}
 
 			m_pos = new_pos;
-			return m_pos;
+			return new_pos;
 		}
 
 		u64 size() override
@@ -1719,7 +1713,7 @@ fs::file::file(const void* ptr, usz size)
 {
 	class memory_stream : public file_base
 	{
-		u64 m_pos{};
+		atomic_t<u64> m_pos{};
 
 		const char* const m_ptr;
 		const u64 m_size;
@@ -1742,18 +1736,9 @@ fs::file::file(const void* ptr, usz size)
 
 		u64 read(void* buffer, u64 count) override
 		{
-			if (m_pos < m_size)
-			{
-				// Get readable size
-				if (const u64 result = std::min<u64>(count, m_size - m_pos))
-				{
-					std::memcpy(buffer, m_ptr + m_pos, result);
-					m_pos += result;
-					return result;
-				}
-			}
-
-			return 0;
+			const u64 advance = read_at(m_pos, buffer, count);
+			m_pos += advance;
+			return advance;
 		}
 
 		u64 read_at(u64 offset, void* buffer, u64 count) override
@@ -1778,6 +1763,23 @@ fs::file::file(const void* ptr, usz size)
 
 		u64 seek(s64 offset, fs::seek_mode whence) override
 		{
+			if (whence == fs::seek_cur)
+			{
+				auto [old, ok] = m_pos.fetch_op([offset](s64& m_pos)
+				{
+					m_pos += offset;
+					return m_pos >= 0;
+				});
+
+				if (!ok)
+				{
+					fs::g_tls_error = fs::error::inval;
+					return -1;
+				}
+
+				return old + offset;
+			}
+
 			const s64 new_pos =
 				whence == fs::seek_set ? offset :
 				whence == fs::seek_cur ? offset + m_pos :
@@ -1790,7 +1792,7 @@ fs::file::file(const void* ptr, usz size)
 			}
 
 			m_pos = new_pos;
-			return m_pos;
+			return new_pos;
 		}
 
 		u64 size() override
@@ -2343,7 +2345,7 @@ fs::file fs::make_gather(std::vector<fs::file> files)
 {
 	struct gather_stream : file_base
 	{
-		u64 pos = 0;
+		atomic_t<u64> m_pos = 0;
 		u64 end = 0;
 		std::vector<file> files{};
 		std::map<u64, u64> ends{}; // Fragment End Offset -> Index
@@ -2385,39 +2387,8 @@ fs::file fs::make_gather(std::vector<fs::file> files)
 
 		u64 read(void* buffer, u64 size) override
 		{
-			if (pos < end)
-			{
-				// Current pos
-				const u64 start = pos;
-
-				// Get readable size
-				if (const u64 max = std::min<u64>(size, end - pos))
-				{
-					u8* buf_out = static_cast<u8*>(buffer);
-					u64 buf_max = max;
-
-					for (auto it = ends.upper_bound(pos); it != ends.end(); ++it)
-					{
-						// Set position for the fragment
-						files[it->second].seek(pos - it->first, fs::seek_end);
-
-						const u64 count = std::min<u64>(it->first - pos, buf_max);
-						const u64 read  = files[it->second].read(buf_out, count);
-
-						buf_out += count;
-						buf_max -= count;
-						pos     += read;
-
-						if (read < count || buf_max == 0)
-						{
-							break;
-						}
-					}
-
-					return pos - start;
-				}
-			}
-
+			const u64 advance = read_at(m_pos, buffer, size);
+			m_pos += advance;
 			return 0;
 		}
 
@@ -2436,7 +2407,8 @@ fs::file fs::make_gather(std::vector<fs::file> files)
 					for (auto it = ends.upper_bound(pos); it != ends.end(); ++it)
 					{
 						const u64 count = std::min<u64>(it->first - pos, buf_max);
-						const u64 read  = files[it->second].read_at(files[it->second].size() + pos - it->first, buf_out, count);
+						const u64 file_size = it != ends.begin() ? it->first - std::prev(it)->first : it->first;
+						const u64 read  = files[it->second].read_at(file_size - (it->first - pos), buf_out, count);
 
 						buf_out += count;
 						buf_max -= count;
@@ -2462,9 +2434,25 @@ fs::file fs::make_gather(std::vector<fs::file> files)
 
 		u64 seek(s64 offset, seek_mode whence) override
 		{
+			if (whence == fs::seek_cur)
+			{
+				auto [old, ok] = m_pos.fetch_op([offset](s64& m_pos)
+				{
+					m_pos += offset;
+					return m_pos >= 0;
+				});
+
+				if (!ok)
+				{
+					fs::g_tls_error = fs::error::inval;
+					return -1;
+				}
+
+				return old + offset;
+			}
+
 			const s64 new_pos =
 				whence == fs::seek_set ? offset :
-				whence == fs::seek_cur ? offset + pos :
 				whence == fs::seek_end ? offset + end : -1;
 
 			if (new_pos < 0)
@@ -2473,8 +2461,8 @@ fs::file fs::make_gather(std::vector<fs::file> files)
 				return -1;
 			}
 
-			pos = new_pos;
-			return pos;
+			m_pos = new_pos;
+			return new_pos;
 		}
 
 		u64 size() override
