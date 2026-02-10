@@ -310,6 +310,7 @@ public:
 		u64 cond_val_size = 0;
 		compare_direction cond_val_compare{};
 		u64 cond_val_incr = 0;
+		u64 cond_val_register_argument_idx = umax;
 		u64 cond_val_register_idx = umax;
 		bool cond_val_incr_before_cond = false;
 		bool cond_val_incr_before_cond_taken_in_account = false;

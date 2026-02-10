@@ -139,7 +139,10 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 		spu_recompiler_base::block_info* bb{};
 
 		// Current block's entry block
-		llvm::BasicBlock* block;
+		llvm::BasicBlock* block{};
+
+		// Instructions entry point (past check_state)
+		llvm::BasicBlock* block_insts{};
 
 		// Final block (for PHI nodes, set after completion)
 		llvm::BasicBlock* block_end{};
@@ -155,6 +158,7 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 
 		// Store instructions
 		std::array<llvm::StoreInst*, s_reg_max> store{};
+		bool block_wide_reg_store_elimination = false;
 
 		// Store reordering/elimination protection
 		std::array<usz, s_reg_max> store_context_last_id = fill_array<usz>(0); // Protects against illegal forward ordering
@@ -364,7 +368,7 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 			{
 				if (i != s_reg_lr && i != s_reg_sp && (i < s_reg_80 || i > s_reg_127))
 				{
-					m_block->reg[i] = m_ir->CreateLoad(get_reg_type(i), init_reg_fixed(i));
+					m_block->reg[i] = get_reg_fixed(i, get_reg_type(i));
 				}
 			}
 
@@ -709,6 +713,11 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 
 		if (!reg)
 		{
+			if (m_block && m_block->block_wide_reg_store_elimination)
+			{
+				fmt::throw_exception("Unexpected load: [%s] at 0x%x (gpr=r%d)", m_hash, m_pos, index);
+			}
+
 			// Load register value if necessary
 			reg = m_finfo && m_finfo->load[index] ? m_finfo->load[index] : m_ir->CreateLoad(get_reg_type(index), init_reg_fixed(index));
 		}
@@ -920,6 +929,14 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 
 		if (m_block)
 		{
+			if (m_block->block_wide_reg_store_elimination)
+			{
+				// Don't save registers for the current block iteration
+				// Affected optimizations:
+				// 1. Single-block reduced loop
+				return;
+			}
+
 			// Keep the store's location in history of gpr preservaions
 			m_block->store_context_last_id[index] = m_block->store_context_ctr[index];
 			m_block->store_context_first_id[index] = std::min<usz>(m_block->store_context_first_id[index], m_block->store_context_ctr[index]);
@@ -2059,6 +2076,43 @@ public:
 				bool need_check = false;
 				m_block->bb = &bb;
 
+				// [1gJ45f2-0x00a40]: 16.4982% (113258)
+				// [ZsQTud1-0x0924c]: 6.1202% (42014)
+				// [ZsQTud1-0x08e54]: 5.6610% (38862)
+				// [0000000-0x3fffc]: 4.3764% (30043)
+				// [Zh4tpJM-0x00bcc]: 3.7908% (26023)
+				// [CFt8hXu-0x063b8]: 3.6177% (24835)
+				// [8YJCUjv-0x0ad18]: 3.2417% (22254)
+				// [Try3XHn-0x0f018]: 2.3721% (16284)
+				// [s6ti9iu-0x07678]: 1.8464% (12675)
+				// [oyxkAPv-0x0c22c]: 1.7776% (12203)
+				// [Q0jLqH4-0x00324]: 1.6015% (10994)
+				static const std::array<std::pair<std::string, u32>, 4> to_nop
+				{
+					{ }
+				};
+
+				bool found_block = false;
+
+				for (auto& [hash, pos] : to_nop)
+				{
+					if (m_hash.find(hash) <= 2 && baddr == pos)
+					{
+						found_block = true;
+						break;
+					}
+				}
+
+				if (found_block)
+				{
+					for (u32 i = 0; i < 100; i++)
+					{
+						auto value = m_ir->CreateLoad(get_type<f32>(), spu_ptr(&spu_thread::last_getllar_lsa));
+						auto mod_val = m_ir->CreateFDiv(value, llvm::ConstantFP::get(value->getType(), 1.1 + i));
+						m_ir->CreateStore(value, spu_ptr(&spu_thread::last_getllar_lsa));
+					}
+				}
+
 				if (!bb.preds.empty())
 				{
 					// Initialize registers and build PHI nodes if necessary
@@ -2172,6 +2226,300 @@ public:
 				if (need_check || (bi == 0 && g_cfg.core.spu_block_size != spu_block_size_type::safe))
 				{
 					check_state(baddr);
+				}
+
+				m_block->block_insts = m_ir->GetInsertBlock();
+
+				const bool is_reduced_loop = m_inst_attrs[(baddr - start) / 4] == inst_attr::reduced_loop;
+				const auto reduced_loop_info = is_reduced_loop ? std::static_pointer_cast<reduced_loop_t>(ensure(m_patterns.at(baddr - start).info_ptr)) : nullptr;
+
+				BasicBlock* block_optimization_phi_parent =  nullptr;
+				const auto block_optimization_inner = is_reduced_loop ? BasicBlock::Create(m_context, fmt::format("b-loop-it-0x%x", m_pos), m_function) : nullptr;
+				const auto block_optimization_exit_early = is_reduced_loop ? BasicBlock::Create(m_context, fmt::format("b-loop-exit-0x%x", m_pos), m_function) : nullptr;
+				const auto block_optimization_next = is_reduced_loop ? BasicBlock::Create(m_context, fmt::format("b2-0x%x", m_pos), m_function) : nullptr;
+
+				std::array<llvm::PHINode*, s_reg_max> reduced_loop_phi_nodes{};
+				std::array<llvm::Value*, s_reg_max> reduced_loop_init_regs{};
+
+				auto make_reduced_loop_condition = [&](llvm::BasicBlock* optimization_block, bool is_second_time)
+				{
+					llvm::ICmpInst::Predicate compare{};
+
+					switch (reduced_loop_info->cond_val_compare)
+					{
+					case CMP_SLESS:  compare = ICmpInst::ICMP_SLT; break;
+					case CMP_SGREATER: compare = ICmpInst::ICMP_SGT; break;
+					case CMP_EQUAL: compare = ICmpInst::ICMP_EQ; break;
+					case CMP_LLESS: compare = ICmpInst::ICMP_ULT; break;
+					case CMP_LGREATER: compare = ICmpInst::ICMP_UGT; break;
+					case CMP_SGREATER_EQUAL: compare = ICmpInst::ICMP_SGE; break;
+					case CMP_SLOWER_EQUAL: compare = ICmpInst::ICMP_SLE; break;
+					case CMP_NOT_EQUAL: compare = ICmpInst::ICMP_NE; break;
+					case CMP_LGREATER_EQUAL: compare = ICmpInst::ICMP_UGE; break;
+					case CMP_LLOWER_EQUAL: compare = ICmpInst::ICMP_ULE; break;
+					{
+						break;
+					}
+					case CMP_UNKNOWN:
+					case CMP_NOT_EQUAL2:
+					case CMP_EQUAL2:
+					default:
+					{
+						ensure(false);
+						break;
+					}
+					}
+
+					llvm::Value* loop_dictator_before_adjustment{};
+					llvm::Value* loop_dictator_after_adjustment{};
+
+					spu_opcode_t reg_target{};
+					reg_target.rt = reduced_loop_info->cond_val_register_idx;
+
+					if (reg_target.rt != reduced_loop_info->cond_val_register_idx)
+					{
+						fmt::throw_exception("LLVM: Reduced Loop Pattern: Illegal condition register index: 0x%llx", reduced_loop_info->cond_val_register_idx);
+					}
+
+					if (!m_block->reg[reg_target.rt])
+					{
+						m_block->reg[reg_target.rt] = reduced_loop_init_regs[reg_target.rt];
+					}
+
+					switch (reduced_loop_info->cond_val_mask)
+					{
+					case u8{umax}:
+					{
+						loop_dictator_before_adjustment = get_scalar(get_vr<u8[16]>(reg_target.rt)).eval(m_ir);
+						break;
+					}
+					case u16{umax}:
+					{
+						loop_dictator_before_adjustment = get_scalar(get_vr<u16[8]>(reg_target.rt)).eval(m_ir);
+						break;
+					}
+					case u32{umax}:
+					{
+						loop_dictator_before_adjustment = get_scalar(get_vr<u32[4]>(reg_target.rt)).eval(m_ir);
+						break;
+					}
+					case u64{umax}:
+					{
+						ensure(false); // TODO
+						loop_dictator_before_adjustment = get_scalar(get_vr<u64[2]>(reg_target.rt)).eval(m_ir);
+						break;
+					}
+					default:
+					{
+						fmt::throw_exception("LLVM: Reduced Loop Pattern: Illegal condition bit mask: 0x%llx", reduced_loop_info->cond_val_mask);
+					}
+					}
+
+					if (reduced_loop_info->cond_val_incr_before_cond && !reduced_loop_info->cond_val_incr_before_cond_taken_in_account)
+					{
+						loop_dictator_after_adjustment = m_ir->CreateAdd(loop_dictator_before_adjustment, m_ir->CreateTrunc(m_ir->getInt64(reduced_loop_info->cond_val_incr & reduced_loop_info->cond_val_mask), loop_dictator_before_adjustment->getType()));
+					}
+					else
+					{
+						loop_dictator_after_adjustment = loop_dictator_before_adjustment;
+					}
+
+					llvm::Value* loop_argument = nullptr;
+
+					if (reduced_loop_info->cond_val_is_immediate)
+					{
+						loop_argument = m_ir->CreateTrunc(m_ir->getInt64(reduced_loop_info->cond_val_min & reduced_loop_info->cond_val_mask), loop_dictator_before_adjustment->getType());
+					}
+					else
+					{
+						spu_opcode_t reg_target2{};
+						reg_target2.rt = reduced_loop_info->cond_val_register_argument_idx;
+
+						if (reg_target2.rt != reduced_loop_info->cond_val_register_argument_idx)
+						{
+							fmt::throw_exception("LLVM: Reduced Loop Pattern: Illegal condition arguemnt register index: 0x%llx", reduced_loop_info->cond_val_register_argument_idx);
+						}
+
+						switch (reduced_loop_info->cond_val_mask)
+						{
+						case u8{umax}:
+						{
+							loop_argument = get_scalar(get_vr<u8[16]>(reg_target2.rt)).eval(m_ir);
+							break;
+						}
+						case u16{umax}:
+						{
+							loop_argument = get_scalar(get_vr<u16[8]>(reg_target2.rt)).eval(m_ir);
+							break;
+						}
+						case u32{umax}:
+						{
+							loop_argument = get_scalar(get_vr<u32[4]>(reg_target2.rt)).eval(m_ir);
+							break;
+						}
+						case u64{umax}:
+						{
+							ensure(false); // TODO
+							loop_argument = get_scalar(get_vr<u64[2]>(reg_target2.rt)).eval(m_ir);
+							break;
+						}
+						}
+					}
+
+					m_ir->CreateCondBr(m_ir->CreateICmp(compare, loop_dictator_after_adjustment, loop_argument), optimization_block, block_optimization_next);
+				};
+
+				if (is_reduced_loop)
+				{
+					for (u32 i = 0; i < s_reg_max; i++)
+					{
+						llvm::Type* type = g_cfg.core.spu_xfloat_accuracy == xfloat_accuracy::accurate && bb.reg_maybe_xf[i] ? get_type<f64[4]>() : get_reg_type(i);
+
+						if (i < reduced_loop_info->loop_dicts.size() && (reduced_loop_info->loop_dicts.test(i) || reduced_loop_info->loop_writes.test(i)))
+						{
+							// Connect registers which are used and then modified by the block
+							auto value = m_block->reg[i];
+
+							if (!value || value->getType() != type)
+							{
+								value = get_reg_fixed(i, type);
+							}
+
+							reduced_loop_init_regs[i] = value;
+						}
+						else if (i < reduced_loop_info->loop_dicts.size() && reduced_loop_info->loop_args.test(i))
+						{
+							// Load registers used as arguments of the loop
+							if (!m_block->reg[i])
+							{
+								m_block->reg[i] = get_reg_fixed(i, type);
+							}
+						}
+					}
+
+					const auto prev_insert_block = m_ir->GetInsertBlock();
+
+					block_optimization_phi_parent = prev_insert_block;
+	
+					make_reduced_loop_condition(block_optimization_inner, false);
+					m_ir->SetInsertPoint(block_optimization_inner);
+
+					for (u32 i = 0; i < s_reg_max; i++)
+					{
+						if (auto init_val = reduced_loop_init_regs[i])
+						{
+							llvm::Type* type = g_cfg.core.spu_xfloat_accuracy == xfloat_accuracy::accurate && bb.reg_maybe_xf[i] ? get_type<f64[4]>() : get_reg_type(i);
+
+							const auto _phi = m_ir->CreatePHI(init_val->getType(), 2, fmt::format("reduced_0x%05x_r%u", baddr, i));
+							_phi->addIncoming(init_val, prev_insert_block);
+
+							reduced_loop_phi_nodes[i] = _phi;
+							m_block->reg[i] = _phi;
+						}
+					}
+
+					m_block->block_wide_reg_store_elimination = true;
+				}
+
+				// Instructions emitting optimizations: Loop iteration is not the last
+				for (m_pos = baddr; is_reduced_loop; m_pos += 4)
+				{
+					if (m_pos != baddr && m_block_info[m_pos / 4] && !reduced_loop_info->is_two_block_loop)
+					{
+						fmt::throw_exception("LLVM: Reduced Loop Pattern: Exit(1) too early at 0x%x", m_pos);
+					}
+
+					if (!(m_pos >= start && m_pos < end))
+					{
+						fmt::throw_exception("LLVM: Reduced Loop Pattern: Exit(2) too early at 0x%x", m_pos);
+					}
+
+					if (m_ir->GetInsertBlock()->getTerminator())
+					{
+						fmt::throw_exception("LLVM: Reduced Loop Pattern: Exit(3) too early at 0x%x", m_pos);
+					}
+
+					const u32 op = std::bit_cast<be_t<u32>>(func.data[(m_pos - start) / 4]);
+
+					if (g_spu_itype.decode(op) & spu_itype::branch)
+					{
+						bool branches_back = false;
+
+						for (u32 dest : op_branch_targets(m_pos, spu_opcode_t{op}))
+						{
+							branches_back = branches_back || dest == baddr;
+						}
+
+						if (!branches_back)
+						{
+							continue;
+						}
+
+						// Optimization block body
+						const auto block_inner = m_ir->GetInsertBlock();
+
+						std::array<llvm::Value*, s_reg_max> block_reg_results{};
+
+						for (u32 i = 0; i < s_reg_max; i++)
+						{
+							if (auto phi = reduced_loop_phi_nodes[i])
+							{
+								const auto type = phi->getType() == get_type<f64[4]>() ? get_type<f64[4]>() : get_reg_type(i);
+								block_reg_results[i] = ensure(get_reg_fixed(i, type));
+								phi->addIncoming(block_reg_results[i], block_inner);
+							}
+						}
+
+						ensure(!!m_block->reg[reduced_loop_info->cond_val_register_idx]);
+						make_reduced_loop_condition(block_optimization_inner, true);
+						m_ir->SetInsertPoint(block_optimization_next);
+						m_block->block_wide_reg_store_elimination = false;
+
+						for (u32 i = 0; i < s_reg_max; i++)
+						{
+							if (const auto loop_value = block_reg_results[i])
+							{
+								const auto phi = m_ir->CreatePHI(loop_value->getType(), 2, fmt::format("redres_0x%05x_r%u", baddr, i));
+
+								phi->addIncoming(loop_value, block_inner);
+								phi->addIncoming(reduced_loop_init_regs[i], block_optimization_phi_parent);
+								m_block->reg[i] = phi;
+							}
+						}
+
+							
+						break;
+					}
+
+					if (!op)
+					{
+						fmt::throw_exception("LLVM: Reduced Loop Pattern: [%s] Unexpected fallthrough to 0x%x (chunk=0x%x, entry=0x%x)", m_hash, m_pos, m_entry, m_function_queue[0]);
+					}
+
+					m_next_op = 0;
+
+					switch (m_inst_attrs[(m_pos - start) / 4])
+					{
+					case inst_attr::putllc0:
+					{
+						putllc0_pattern(func, m_patterns.at(m_pos - start).info);
+						continue;
+					}
+					case inst_attr::putllc16:
+					{
+						putllc16_pattern(func, m_patterns.at(m_pos - start).info);
+						continue;
+					}
+					case inst_attr::omit:
+					{
+						// TODO
+						continue;
+					}
+					default: break;
+					}
+
+					// Execute recompiler function (TODO)
+					(this->*decode(op))({op});
 				}
 
 				// Emit instructions
