@@ -38,6 +38,28 @@ void fmt_class_string<bs_t<ppu_attr>>::format(std::string& out, u64 arg)
 	format_bitset(out, arg, "[", ",", "]", &fmt_class_string<ppu_attr>::format);
 }
 
+ppu_global_analyser_info::ppu_global_analyser_info() noexcept
+{
+	for (auto& bucket : any_access)
+	{
+		bucket.release(&this->default_bucket);
+	}
+
+	atomic_fence_seq_cst();
+}
+
+ppu_global_analyser_info::~ppu_global_analyser_info() noexcept
+{
+	for (const auto& bucket : any_access)
+	{
+		if (bucket.load() != &this->default_bucket)
+		{
+			delete (bucket.load());
+		}
+	}
+}
+
+
 template <>
 void ppu_module<lv2_obj>::validate(u32 reloc)
 {
@@ -1371,6 +1393,7 @@ bool ppu_module<lv2_obj>::analyse(u32 lib_toc, u32 entry, const u32 sec_end, con
 		u32 addr = 0;
 		u32 size = 0;
 		u32 parent_block_idx = umax;
+		bool is_storing_memory = false;
 		ppua_reg_mask_t mapped_registers_mask{0};
 		ppua_reg_mask_t moved_registers_mask{0};
 	};
@@ -1857,6 +1880,11 @@ bool ppu_module<lv2_obj>::analyse(u32 lib_toc, u32 entry, const u32 sec_end, con
 			{
 				// Update size
 				func.blocks[block_queue[j].addr] = size;
+
+				if (!block_queue[j].is_storing_memory)
+				{
+					g_fxo->get<ppu_global_analyser_info>().set_if_not_stores(block_queue[j].addr);
+				}
 			}
 
 			j++;
@@ -1966,6 +1994,11 @@ bool ppu_module<lv2_obj>::analyse(u32 lib_toc, u32 entry, const u32 sec_end, con
 				const u32 iaddr = _ptr.addr();
 				const ppu_opcode_t op{*advance(_ptr, ptr, 1)};
 				const ppu_itype::type type = g_ppu_itype.decode(op.opcode);
+
+				if (type & ppu_itype::store && op.ra != 1)
+				{
+					block->is_storing_memory = true;
+				}
 
 				switch (type)
 				{

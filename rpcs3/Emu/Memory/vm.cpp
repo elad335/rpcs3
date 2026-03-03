@@ -9,6 +9,8 @@
 #include "Emu/CPU/CPUThread.h"
 #include "Emu/RSX/RSXThread.h"
 #include "Emu/Cell/SPURecompiler.h"
+#include "Emu/Cell/PPUThread.h"
+#include "Emu/Cell/PPUAnalyser.h"
 #include "Emu/perf_meter.hpp"
 #include <deque>
 #include <span>
@@ -585,13 +587,51 @@ namespace vm
 				utils::pause();
 			}
 
+			bool waited_busy = false;
+
 			for (auto lock = g_locks.cbegin(), end = lock + g_cfg.core.ppu_threads; lock != end; lock++)
 			{
-				if (auto ptr = +*lock)
+				if (ppu_thread* ptr = static_cast<ppu_thread*>(lock->load()))
 				{
-					while (!(ptr->state & cpu_flag::wait))
+					if (!(ptr->state & cpu_flag::wait))
 					{
-						utils::pause();
+						u32 cia = ptr->cia;
+
+						const bool is_cia_safe = g_fxo->get<ppu_global_analyser_info>().check_if_not_stores(cia);
+
+						if (waited_busy)
+						{
+							if (is_cia_safe)
+							{
+								continue;
+							}
+
+							while (!(ptr->state & cpu_flag::wait))
+							{
+								utils::pause();
+							}
+
+							continue;
+						}
+
+						const u64 m_tsc = utils::get_tsc();
+
+						while (!(ptr->state & cpu_flag::wait))
+						{
+							utils::pause();
+
+							if (utils::get_tsc() - m_tsc >= 200)
+							{
+								waited_busy = true;
+
+								if (is_cia_safe)
+								{
+									break;
+								}
+							}
+						}
+
+						continue;
 					}
 				}
 			}

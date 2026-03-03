@@ -7325,7 +7325,7 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point, s
 
 		if (allow_pattern)
 		{
-			add_pattern(inst_attr::putllc16, pattern.put_pc - result.entry_point, value.data);
+			//add_pattern(inst_attr::putllc16, pattern.put_pc - result.entry_point, value.data);
 		}
 
 		spu_log.success("PUTLLC16 Pattern Detected! (mem_count=%d, put_pc=0x%x, pc_rel=%d, offset=0x%x, const=%u, two_regs=%d, reg=%u, runtime=%d, 0x%x-%s, pattern-hash=%s) (putllc0=%d, putllc16+0=%d, all=%d)"

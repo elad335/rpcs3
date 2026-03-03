@@ -22,12 +22,56 @@ enum class ppu_attr : u8
 	__bitset_enum_max
 };
 
+struct ppu_global_analyser_info
+{
+	ppu_global_analyser_info() noexcept;
+	~ppu_global_analyser_info() noexcept;
+
+	static constexpr u64 bucket_size = 0x100000u;
+
+	std::array<atomic_t<u8>, bucket_size / 32> default_bucket{};
+
+	std::array<atomic_t<decltype(default_bucket)*>, (u32{umax} + u64{1}) / bucket_size> any_access;
+
+	bool check_if_not_stores(u32 addr)
+	{
+		const auto bucket_ptr = any_access[addr / bucket_size].load();
+		const u8 bitmask = (*bucket_ptr)[(addr % bucket_size) / (8 * 4)];
+		return (bitmask & (1u << ((addr / 4) % 8))) != 0;
+	}
+
+	bool set_if_not_stores(u32 addr)
+	{
+		auto& bucket = any_access[addr / bucket_size];
+		auto bucket_ptr = bucket.load();
+
+		if (bucket_ptr == &this->default_bucket)
+		{
+			const auto new_ptr = new decltype(default_bucket){};
+			
+			auto test_ptr = &this->default_bucket;
+			if (bucket.compare_exchange(test_ptr, new_ptr))
+			{
+				bucket_ptr = new_ptr;
+			}
+			else
+			{
+				bucket_ptr = test_ptr;
+				delete new_ptr;
+			}
+		}
+
+		atomic_t<u8>& bitmask = (*bucket_ptr)[(addr % bucket_size) / (8 * 4)];
+		return bitmask.bit_test_set((addr / 4) % 8);
+	}
+};
+
 // PPU Function Information
 struct ppu_function
 {
 	u32 addr = 0;
 	u32 toc = 0;
-	u32 size = 0;
+	u16 size = 0;
 
 	std::map<u32, u32> blocks{}; // Basic blocks: addr -> size
 
