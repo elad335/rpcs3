@@ -1,6 +1,9 @@
 #include <QApplication>
 #include <QThread>
+
+#if __has_include(<QJsonObject>)
 #include <QJsonObject>
+#endif
 
 #include "downloader.h"
 #include "curl_handle.h"
@@ -114,6 +117,7 @@ void downloader::start(const std::string& url, bool follow_location, bool show_p
 
 			if (check_return_code && m_download_attempts < 3)
 			{
+#if __has_include(<QJsonObject>)
 				const QJsonObject json_data = QJsonDocument::fromJson(m_curl_buf).object();
 				const int return_code = json_data["return_code"].toInt(-255);
 
@@ -124,6 +128,7 @@ void downloader::start(const std::string& url, bool follow_location, bool show_p
 					start(url, follow_location, show_progress_dialog, check_return_code, progress_dialog_title, keep_progress_dialog_open, expected_size, true);
 					return;
 				}
+#endif
 			}
 
 			Q_EMIT signal_download_finished(m_curl_buf);
