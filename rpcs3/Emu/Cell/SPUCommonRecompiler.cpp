@@ -3864,15 +3864,23 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point, s
 			continue;
 		}
 
+		bool removed = false;
+
 		for (auto it2 = it->second.begin(); it2 != it->second.end();)
 		{
 			if (*it2 < lsa || *it2 >= limit)
 			{
 				it2 = it->second.erase(it2);
+				removed = true;
 				continue;
 			}
 
 			it2++;
+		}
+
+		if (removed)
+		{
+			it->second.emplace_back(SPU_LS_SIZE);
 		}
 
 		it++;
@@ -5130,6 +5138,7 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point, s
 		bool invalid = bb_body.size <= 2;
 		bool valid = true;
 
+		u32 expected_sup_conds = 0;
 		u32 first_pred_of_loop = SPU_LS_SIZE;
 
 		for (u32 pred : get_block_preds(bpc))
@@ -5152,25 +5161,20 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point, s
 
 		for (u32 target : get_block_targets(first_pred_of_loop))
 		{
+			valid = true;
 			targets_count++;
+
+			if (first_pred_of_loop == bpc)
+			{
+				continue;
+			}
 
 			if (target != bpc)
 			{
-				if (first_pred_of_loop == bpc)
-				{
-					if (target != first_pred_of_loop + bb_connect.size * 4)
-					{
-						invalid = true;
-					}
-				}
-				else
+				if (target != first_pred_of_loop + bb_connect.size * 4)
 				{
 					invalid = true;
 				}
-			}
-			else
-			{
-				valid = true;
 			}
 		}
 
@@ -5179,21 +5183,84 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point, s
 			invalid = true;
 		}
 
+		const bool is_two_block_loop = targets_count == 1;
+ 
 		invalid = invalid || !valid;
 		valid = false;
 
 		// Check loop body block (must jump to last-block or another location)
 
-		targets_count = 0;
-
-		for (u32 target : get_block_targets(bpc))
+		for (u32 block_pc = bpc; !invalid;)
 		{
-			targets_count++;
+			targets_count = 0;
 
-			if (target == first_pred_of_loop)
+			const u32 cond_next = block_pc + ::at32(m_bbs, block_pc).size * 4;
+			valid = false;
+
+			bool is_end = false;
+
+			for (u32 target : get_block_targets(block_pc))
+			{
+				targets_count++;
+
+				if (target == cond_next)
+				{
+					// Conditional branch
+					valid = true;
+				}
+
+				if (target <= block_pc && target > bpc)
+				{
+					// Branch backwards
+					invalid = true;
+				}
+
+				if (target == bpc)
+				{
+					is_end = true;
+				}
+			}
+
+			// if (bpc != block_pc)
+			// {
+			// 	for (u32 pred : get_block_preds(block_pc))
+			// 	{
+			// 		if (pred < bpc || pred > first_pred_of_loop + ::at32(m_bbs, first_pred_of_loop).size * 4)
+			// 		{
+			// 			invalid = true;
+			// 			break;
+			// 		}
+			// 	}
+			// }
+
+			if (targets_count > 2)
+			{
+				invalid = true;
+				break;
+			}
+
+			if (cond_next == first_pred_of_loop && is_two_block_loop)
 			{
 				valid = true;
+				break;
 			}
+
+			if (!valid)
+			{
+				break;
+			}
+
+			if (bpc == first_pred_of_loop || is_end)
+			{
+				break;
+			}
+
+			if (targets_count == 2)
+			{
+				expected_sup_conds++;
+			}
+
+			block_pc = cond_next;
 		}
 
 		invalid = invalid || !valid;
@@ -5219,13 +5286,15 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point, s
 			}
 		}
 
-		if (valid && !invalid && !reduced_loop_all.count(bpc))
+		if (valid && !invalid && !reduced_loop_all.count(bpc) && expected_sup_conds  == 0)
 		{
 			const auto reduced_loop = &block_state_it.reduced_loop;
 			reduced_loop->discard();
 			reduced_loop->active = true;
 			reduced_loop->loop_pc = bpc;
-			reduced_loop->is_two_block_loop = first_pred_of_loop != bpc;
+			reduced_loop->loop_end = first_pred_of_loop;
+			reduced_loop->expected_sup_conds = expected_sup_conds;
+			reduced_loop->is_two_block_loop = is_two_block_loop;
 		}
 	};
 
@@ -5475,7 +5544,7 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point, s
 				spu_log.notice("%s\n%s", break_error, tracing);
 
 				std::string block_dump;
-				this->dump(result, block_dump, bpc, pos + 1);
+				this->dump(result, block_dump, previous.loop_pc, previous.loop_end + 1);
 	
 				spu_log.notice("SPU Block Dump:\n%s", block_dump);
 			}
@@ -5801,7 +5870,7 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point, s
 						if (previous_pc != rchcnt_loop_info.branch_pc || target_pc == rchcnt_loop_info.branch_target)
 							next.rchcnt_loop = rchcnt_loop_info;
 
-						if (previous_pc + 4 == target_pc && reduced_loop_info.is_two_block_loop)
+						if (previous_pc + 4 == target_pc && reduced_loop_info.loop_pc != reduced_loop_info.loop_end && reduced_loop_info.active && target_pc <= reduced_loop_info.loop_end)
 							next.reduced_loop = reduced_loop_info;
 					}
 					else
@@ -6353,6 +6422,12 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point, s
 
 			while (reduced_loop->active)
 			{
+				if (reduced_loop->expected_sup_conds)
+				{
+					break_reduced_loop_pattern(50, reduced_loop->discard());
+					break;
+				}
+
 				const u32 op_rt = op.rt;
 
 				const auto reg = reduced_loop->find_reg(op_rt);
@@ -8197,6 +8272,11 @@ spu_program spu_recompiler_base::analyse(const be_t<u32>* ls, u32 entry_point, s
 		{
 			for (u32 next_target : ::at32(m_targets, pos))
 			{
+				if (next_target == SPU_LS_SIZE)
+				{
+					continue;
+				}
+
 				add_block(next_target);
 			}
 

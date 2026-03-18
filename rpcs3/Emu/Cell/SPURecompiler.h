@@ -298,6 +298,7 @@ public:
 		bool active = false; // Single block loop detected
 		bool failed = false;
 		u32 loop_pc = SPU_LS_SIZE;
+		u32 loop_end = SPU_LS_SIZE;
 
 		// False: single-block loop
 		// True: loop with a trailing block of aftermath (iteration update) stuff (like for (u32 i = 0; i < 10; /*update*/ i++))
@@ -319,6 +320,21 @@ public:
 		// Loop attributes
 		bool is_constant_expression = false;
 		bool is_secret = false;
+
+		struct supplemental_condition_t
+		{
+			u64 immediate_value = umax;
+			u64 type_size = 0;
+			compare_direction val_compare{};
+		};
+
+		// Supplemental loop condition:
+		// Inner conditions that depend on extrnal values (not produced inside the loop)
+		// all should evaluate to false in order for the optimization to work (at the moment)
+		// So succeeding can be treated linearly 
+		u64 expected_sup_conds = 0;
+		u64 current_sup_conds_index = 0;
+		std::vector<supplemental_condition_t> sup_conds;
 
 		void take_cond_val_incr_before_cond_into_account()
 		{
