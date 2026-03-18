@@ -2532,7 +2532,7 @@ public:
 				// Instructions emitting optimizations: Loop iteration is not the last
 				for (m_pos = baddr; is_reduced_loop; m_pos += 4)
 				{
-					if (m_pos != baddr && m_block_info[m_pos / 4] && !reduced_loop_info->is_two_block_loop)
+					if (m_pos != baddr && m_block_info[m_pos / 4] && reduced_loop_info->loop_end < m_pos)
 					{
 						fmt::throw_exception("LLVM: Reduced Loop Pattern: Exit(1) too early at 0x%x", m_pos);
 					}
