@@ -108,6 +108,20 @@ public:
 		return {get_vr<T>(args)...};
 	}
 
+	template <typename T, typename... Args>
+	std::tuple<std::conditional_t<false, Args, llvm::Value*>...> get_fprs(const Args&... args)
+	{
+		return {GetFpr(args, sizeof(T) * 8)...};
+	}
+
+	u32 test_fprs_is_f32(std::vector<u32> indices);
+
+	template <typename... Args>
+	u32 test_fprs_is_f32(const Args&... args)
+	{
+		return test_fprs_is_f32(std::vector<u32>{(+args)...});
+	}
+
 	template <typename T>
 	void set_vr(u32 vr, T&& expr)
 	{
@@ -177,7 +191,7 @@ public:
 	void SetGpr(u32 r, llvm::Value* value);
 
 	// Get fpr
-	llvm::Value* GetFpr(u32 r, u32 bits = 64, bool as_int = false);
+	llvm::Value* GetFpr(u32 r, u32 bits = 64);
 
 	// Set fpr
 	void SetFpr(u32 r, llvm::Value* val);
@@ -231,6 +245,15 @@ public:
 	{
 		for (usz i = 0; i < N; i++) values[i] = ZExt(values[i], type);
 		return values;
+	}
+
+	std::map<std::pair<llvm::Value*, llvm::Type*> llvm::Valu* m_cast_fps_cached;
+	llvm::Value* cast_fp(llvm::Value* src, llvm::Type* type);
+
+	template <typename T>
+	llvm::Value* cast_fp(llvm::Value* src)
+	{
+		return cast_fp(src, get_type<T>());
 	}
 
 	// Add multiple elements
