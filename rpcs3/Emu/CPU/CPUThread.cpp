@@ -15,6 +15,7 @@
 #include "Emu/perf_meter.hpp"
 
 #include "util/asm.hpp"
+#include "util/sysinfo.hpp"
 #include <thread>
 #include <unordered_map>
 #include <map>
@@ -398,11 +399,11 @@ struct cpu_prof
 					const u64 name = ppu ? atomic_storage<u32>::load(ppu->cia) : atomic_storage<u64>::load(ptr->block_hash);
 
 					// Append occurrence
-					info.samples++;
 
 					if (cpu_flag::wait - state)
 					{
 						info.freq[name]++;
+						info.samples++;
 						info.new_samples++;
 
 						if (spu)
@@ -425,6 +426,7 @@ struct cpu_prof
 							continue;
 						}
 
+						info.samples++;
 						info.idle++;
 					}
 				}
@@ -450,10 +452,16 @@ struct cpu_prof
 				continue;
 			}
 
+			if (utils::get_thread_count() >= 16)
+			{
+				busy_wait(2000);
+				continue;
+			}
+
 			if (!g_cfg.core.spu_debug)
 			{
 				// Reduce accuracy in favor of performance when enabled alone
-				thread_ctrl::wait_for(60, false);
+				//thread_ctrl::wait_for(60, false);
 				continue;
 			}
 
