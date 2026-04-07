@@ -656,17 +656,6 @@ std::tuple<u32, std::array<u32, 3>, u32> op_register_targets(u32 /*pc*/, spu_opc
 
 	spu_opcode_t op_masked = op;
 
-	if (type & spu_itype::_quadrop)
-	{
-		op_masked.rt4 = 0;
-	}
-	else
-	{
-		op_masked.rt = 0;
-	}
-
-	std::get<2>(result) = op_masked.opcode;
-
 	if (auto iflags = g_spu_iflag.decode(op.opcode))
 	{
 		if (+iflags & +spu_iflag::use_ra)
@@ -683,8 +672,83 @@ std::tuple<u32, std::array<u32, 3>, u32> op_register_targets(u32 /*pc*/, spu_opc
 		{
 			std::get<1>(result)[2] = op.rc;
 		}
+
+		if (type & spu_itype::_quadrop)
+		{
+			op_masked.rt4 = 0;
+		}
+		else if (!(iflags & +spu_iflag::use_rc))
+		{
+			// Only mask-out if RT is not an argumen t as well
+			op_masked.rt = 0;
+		}
+	}
+	else
+	{
+		op_masked.rt = 0;
 	}
 
+	switch (type)
+	{
+	//case spu_itype::STQX:
+	case spu_itype::LQX:
+	case spu_itype::AH:
+	case spu_itype::A:
+	case spu_itype::ADDX:
+	case spu_itype::MPY:
+	case spu_itype::MPYU:
+	case spu_itype::MPYS:
+	case spu_itype::MPYHH:
+	case spu_itype::MPYHHA:
+	case spu_itype::MPYHHU:
+	case spu_itype::MPYHHAU:
+	case spu_itype::AVGB:
+	case spu_itype::ABSDB:
+	case spu_itype::SUMB:
+	case spu_itype::AND:
+	case spu_itype::OR:
+	case spu_itype::XOR:
+	case spu_itype::NAND:
+	case spu_itype::NOR:
+	case spu_itype::EQV:
+	case spu_itype::MPYA:
+	case spu_itype::FMA:
+	case spu_itype::FNMS:
+	case spu_itype::FMS:
+	case spu_itype::FA:
+	case spu_itype::FM:
+	case spu_itype::FI:
+	case spu_itype::FCEQ:
+	case spu_itype::FCMEQ:
+	case spu_itype::DFA:
+	case spu_itype::DFM:
+	case spu_itype::DFMA:
+	case spu_itype::DFNMS:
+	case spu_itype::DFMS:
+	case spu_itype::CEQB:
+	case spu_itype::CEQH:
+	case spu_itype::CEQ:
+	{
+		if (std::get<1>(result)[0] > std::get<1>(result)[1])
+		{
+			// Unify register origin across instructions that allow swapping RA with RB
+			std::swap(std::get<1>(result)[0], std::get<1>(result)[1]);
+
+			const u32 op_ra = op.ra;
+			const u32 op_rb = op.rb;
+			op_masked.ra = op_rb;
+			op_masked.rb = op_ra;
+		}
+
+		break;
+	}
+	default:
+	{
+		break;
+	}
+	}
+
+	std::get<2>(result) = op_masked.opcode;
 	return result;
 }
 
