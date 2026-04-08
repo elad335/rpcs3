@@ -1141,7 +1141,7 @@ error_code cellGameDataCheckCreate2(ppu_thread& ppu, u32 version, vm::cptr<char>
 				return CELL_GAMEDATA_ERROR_PARAM;
 			}
 
-			if (!fs::create_path(vfs::get(usrdir)))
+			if (!fs::is_dir(vfs::get(usrdir)))
 			{
 				return {CELL_GAME_ERROR_ACCESS_ERROR, usrdir};
 			}
