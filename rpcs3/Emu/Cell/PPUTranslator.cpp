@@ -283,6 +283,11 @@ Function* PPUTranslator::Translate(const ppu_function& info)
 				break;
 			}
 
+			if (m_addr != block.first - base && m_addr - (block.first - base) % (4 * 6) == 0)
+			{
+				TestAborted("opcodes");
+			}
+
 			// Find the relocation at current address
 			const auto rel_found = m_relocs.find(m_addr + base);
 
@@ -836,21 +841,38 @@ llvm::Value* PPUTranslator::GetMemory(llvm::Value* addr)
 	return m_ir->CreatePtrAdd(m_base, addr);
 }
 
-void PPUTranslator::TestAborted()
+void PPUTranslator::TestAborted(std::string block_name)
 {
-	const auto body = BasicBlock::Create(m_context, fmt::format("__body_0x%x_%s", m_cia, m_ir->GetInsertBlock()->getName().str()), m_function);
+	const bool can_return = block_name != "opcodes";
+
+	const auto body = BasicBlock::Create(m_context, fmt::format("__body_0x%x_%s_%s", m_cia, m_ir->GetInsertBlock()->getName().str(), block_name), m_function);
 
 	// Check status register in the entry block
 	auto ptr = llvm::dyn_cast<GetElementPtrInst>(m_ir->CreateStructGEP(m_thread_type, m_thread, 1));
 	assert(ptr->getResultElementType() == GetType<u32>());
 	const auto vstate = m_ir->CreateLoad(ptr->getResultElementType(), ptr, true);
-	const auto vcheck = BasicBlock::Create(m_context, fmt::format("__test_0x%x_%s", m_cia, m_ir->GetInsertBlock()->getName().str()), m_function);
-	m_ir->CreateCondBr(m_ir->CreateIsNull(m_ir->CreateAnd(vstate, static_cast<u32>(cpu_flag::again + cpu_flag::exit))), body, vcheck, m_md_likely);
+	const auto vcheck = BasicBlock::Create(m_context, fmt::format("__test_0x%x_%s_%s", m_cia, m_ir->GetInsertBlock()->getName().str(), block_name), m_function);
+	const auto vreturn = BasicBlock::Create(m_context, fmt::format("__return_0x%x_%s_%s", m_cia, m_ir->GetInsertBlock()->getName().str(), block_name), m_function);
+	m_ir->CreateCondBr(m_ir->CreateIsNull(vstate), body, vcheck, m_md_likely);
 
 	m_ir->SetInsertPoint(vcheck);
 
+	// Raise wait flag as soon as possible
+	m_ir->CreateAtomicRMW(llvm::AtomicRMWInst::Or, ptr, m_ir->getInt32((cpu_flag::wait + cpu_flag::temp).operator u32()), llvm::MaybeAlign{4}, llvm::AtomicOrdering::AcquireRelease);
+
 	// Create tail call to the check function
-	Call(GetType<void>(), "__check", m_thread, GetAddr())->setTailCall();
+	Call(GetType<void>(), "__check", m_thread, GetAddr());
+
+	if (can_return)
+	{
+		m_ir->CreateCondBr(m_ir->CreateIsNull(m_ir->CreateAnd(vstate, static_cast<u32>(cpu_flag::again + cpu_flag::exit + cpu_flag::req_exit))), body, vreturn, m_md_likely);
+	}
+	else
+	{
+		m_ir->CreateBr(body);
+	}
+
+	m_ir->SetInsertPoint(vreturn);
 	m_ir->CreateRetVoid();
 	m_ir->SetInsertPoint(body);
 }
@@ -893,7 +915,7 @@ Value* PPUTranslator::ReadMemory(Value* addr, Type* type, bool is_be, u32 align)
 			ppu_log.notice("LLVM: Detected potential MMIO32 read at [0x%08x]", m_addr + (m_reloc ? m_reloc->addr : 0));
 			value = Call(GetType<u32>(), "__read_maybe_mmio32", m_base, addr);
 
-			TestAborted();
+			TestAborted("read");
 		}
 		else
 		{
@@ -912,7 +934,7 @@ Value* PPUTranslator::ReadMemory(Value* addr, Type* type, bool is_be, u32 align)
 
 		ppu_log.notice("LLVM: Detected potential MMIO32 read at [0x%08x]", m_addr + (m_reloc ? m_reloc->addr : 0));
 		Value* r = Call(GetType<u32>(), "__read_maybe_mmio32", m_base, addr);
-		TestAborted();
+		TestAborted("read");
 		return r;
 	}
 
@@ -951,7 +973,7 @@ void PPUTranslator::WriteMemory(Value* addr, Value* value, bool is_be, u32 align
 
 				ppu_log.notice("LLVM: Detected potential MMIO32 write at [0x%08x]", m_addr + (m_reloc ? m_reloc->addr : 0));
 				Call(GetType<void>(), "__write_maybe_mmio32", m_base, addr, value);
-				TestAborted();
+				TestAborted("write");
 				return;
 			}
 		}

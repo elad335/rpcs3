@@ -3040,6 +3040,7 @@ template <typename T>
 static T ppu_load_acquire_reservation(ppu_thread& ppu, u32 addr)
 {
 	perf_meter<"LARX"_u32> perf0;
+	ppu.state += cpu_flag::wait;
 
 	// Do not allow stores accessed from the same cache line to past reservation load
 	atomic_fence_seq_cst();
@@ -5177,7 +5178,7 @@ bool ppu_initialize(const ppu_module<lv2_obj>& info, bool check_only, u64 file_s
 				settings += ppu_settings::contains_symbol_resolver; // Avoid invalidating all modules for this purpose
 
 			// Write version, hash, CPU, settings
-			fmt::append(obj_name, "v7-kusa-%s-%s-%s.obj", fmt::base57(output, 16), fmt::base57(settings), jit_compiler::cpu(g_cfg.core.llvm_cpu));
+			fmt::append(obj_name, "v8-kusa-%s-%s-%s.obj", fmt::base57(output, 16), fmt::base57(settings), jit_compiler::cpu(g_cfg.core.llvm_cpu));
 		}
 
 		if (cpu ? cpu->state.all_of(cpu_flag::exit) : Emu.IsStopped())

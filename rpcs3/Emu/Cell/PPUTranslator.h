@@ -156,7 +156,7 @@ public:
 	void CallFunction(u64 target, llvm::Value* indirect = nullptr);
 
 	// Emit state check mid-block
-	void TestAborted();
+	void TestAborted(std::string block_name = "");
 
 	// Initialize global for writing
 	llvm::Value* RegInit(llvm::Value*& local);
