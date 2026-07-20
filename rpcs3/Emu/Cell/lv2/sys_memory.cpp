@@ -149,7 +149,7 @@ error_code sys_memory_allocate(cpu_thread& cpu, u64 size, u64 flags, vm::ptr<u32
 	{
 		if (const u32 addr = area->alloc(static_cast<u32>(size), nullptr, align))
 		{
-			ensure(!g_fxo->get<sys_memory_address_table>().addrs[addr >> 16].exchange(&dct));
+			ensure(!lv2_process::get_typemap()->get<sys_memory_address_table>().addrs[addr >> 16].exchange(&dct));
 
 			if (alloc_addr)
 			{
@@ -223,7 +223,7 @@ error_code sys_memory_allocate_from_container(cpu_thread& cpu, u64 size, u32 cid
 	{
 		if (const u32 addr = area->alloc(static_cast<u32>(size)))
 		{
-			ensure(!g_fxo->get<sys_memory_address_table>().addrs[addr >> 16].exchange(ct.ptr.get()));
+			ensure(!lv2_process::get_typemap()->get<sys_memory_address_table>().addrs[addr >> 16].exchange(ct.ptr.get()));
 
 			if (alloc_addr)
 			{
@@ -251,7 +251,7 @@ error_code sys_memory_free(cpu_thread& cpu, u32 addr)
 
 	sys_memory.warning("sys_memory_free(addr=0x%x)", addr);
 
-	const auto ct = addr % 0x10000 ? nullptr : g_fxo->get<sys_memory_address_table>().addrs[addr >> 16].exchange(nullptr);
+	const auto ct = addr % 0x10000 ? nullptr : lv2_process::get_typemap()->get<sys_memory_address_table>().addrs[addr >> 16].exchange(nullptr);
 
 	if (!ct)
 	{
