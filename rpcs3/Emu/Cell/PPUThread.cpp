@@ -2394,6 +2394,7 @@ void ppu_thread::exec_task()
 		has_ppc_seg = process->ppc_seg;
 		sdk_version = process->sdk_ver;
 		vm_owner = process->memory_4GB_model;
+		proc_id = id_manager::g_process;
 	}
 
 	vm_base = ensure(vm::g_base_addr);
