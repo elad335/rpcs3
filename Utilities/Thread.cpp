@@ -1348,8 +1348,17 @@ a64_mem_info_t decode_a64_mem_inst(u32 inst)
 			// 10 LDRSW
 			r.op = A64_LOAD;
 
-			// LDRSB/LDRSH: bit 22 selects Wt vs Xt
-			r.reg_size = opc == 3 ? 4 : 8;
+			if (size == 2)
+			{
+				// LDUSW
+				r.reg_size = 8;
+			}
+			else
+			{
+				// LDRSB/LDRSH
+				// opc=2 -> Wt, opc=3 -> Xt
+				r.reg_size = (opc == 3) ? 8 : 4;
+			}
 
 			r.reg_signed = true;
 			return r;
@@ -1359,6 +1368,71 @@ a64_mem_info_t decode_a64_mem_inst(u32 inst)
 		}
 	}
 
+	// Scalar load/store unscaled immediate (LDUR/STUR)
+	// size[31:30]
+	// V[26]
+	// opc[23:22]
+	// class bits[29:24] = 111000
+	if ((inst & 0x3B000000) == 0x38000000)
+	{
+		const u32 size = (inst >> 30) & 3;
+		const u32 opc  = (inst >> 22) & 3;
+
+		r.mem_size = 1u << size;
+
+		switch (opc)
+		{
+		case 0:
+		{
+			// STURB/STURH/STUR Wt/STUR Xt
+			r.op = A64_STORE;
+
+			// Source register width
+			r.reg_size = r.mem_size;
+			return r;
+		}
+
+		case 1:
+		{
+			// LDURB/LDURH/LDUR Wt/LDUR Xt
+			r.op = A64_LOAD;
+
+			// Destination register width
+			r.reg_size = (size == 3) ? 8 : 4;
+			r.reg_signed = false;
+			return r;
+		}
+
+		case 2:
+		case 3:
+		{
+			// LDURSB/LDURSH/LDURSW
+			if (size == 3)
+			{
+				return r;
+			}
+
+			r.op = A64_LOAD;
+			r.reg_signed = true;
+
+			if (size == 2)
+			{
+				// LDURSW
+				r.reg_size = 8;
+			}
+			else
+			{
+				// LDURSB/LDURSH
+				// opc=2 -> Wt, opc=3 -> Xt
+				r.reg_size = (opc == 3) ? 8 : 4;
+			}
+
+			return r;
+		}
+		default:
+			return r;
+		}
+	}
 
 	// 
 	// Literal loads:
