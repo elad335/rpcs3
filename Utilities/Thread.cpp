@@ -1276,207 +1276,236 @@ enum mem_a64_op_t
 	A64_INVALID = 0,
 	A64_LOAD,
 	A64_STORE,
+	A64_ATOMIC, // Read-modify-write, see atomic_a64_op_t
+};
+
+// Mirrors the opc field of the "Atomic memory operations" encoding class
+enum atomic_a64_op_t
+{
+	A64_ATOMIC_ADD = 0, // LDADD/LDADDA/LDADDAL/LDADDL (and the STADD aliases)
+	A64_ATOMIC_CLR,     // LDCLR: value AND NOT operand
+	A64_ATOMIC_EOR,     // LDEOR
+	A64_ATOMIC_SET,     // LDSET: value OR operand
+	A64_ATOMIC_SMAX,
+	A64_ATOMIC_SMIN,
+	A64_ATOMIC_UMAX,
+	A64_ATOMIC_UMIN,
+	A64_ATOMIC_SWP,     // SWP: plain exchange, encoded with o3=1 instead of an opc of its own
 };
 
 struct a64_mem_info_t
 {
 	mem_a64_op_t op;
-	u32 mem_size;   // Bytes accessed in memory
-	u32 reg_size;   // Register width (4 or 8 bytes)
-	u32 reg_num;
+	atomic_a64_op_t atomic_op; // Only meaningful if op is A64_ATOMIC
+	u32 mem_size;      // Bytes accessed in memory (0 if the instruction is not supported)
+	u32 reg_size;      // Register width (4 or 8 bytes)
+	u32 reg_num;       // Rt: destination of loads, data source of stores, old value of atomics
+	u32 src_reg_num;   // Rs: second operand of an atomic read-modify-write
+	u32 base_reg_num;  // Rn: base register, only modified if base_reg_incr is not 0
+	s32 base_reg_incr; // Base register writeback of pre/post-indexed addressing (0 if there is none)
 	bool reg_signed;
 };
 
+u64 get_a64_size_mask(u32 bytes)
+{
+	ensure(bytes == 1 || bytes == 2 || bytes == 4 || bytes == 8);
+	return bytes == 8 ? u64{umax} : (u64{1} << (bytes * 8)) - 1;
+}
+
 a64_mem_info_t decode_a64_mem_inst(u32 inst)
 {
-	a64_mem_info_t r{ A64_INVALID, 0, 0, inst % 32, false };
+	a64_mem_info_t r{};
+	r.reg_num = inst % 32;
+	r.src_reg_num = (inst >> 16) % 32;
+	r.base_reg_num = (inst >> 5) % 32;
 
-	// Exclude SIMD/FP loads/stores
-	if ((inst >> 26) & 1)
+	// Decode the encoding class, leaves r.op as A64_INVALID if the instruction cannot be emulated
+	[&]()
 	{
-		return r;
-	}
+		// Exclude SIMD/FP loads/stores (V bit)
+		if ((inst >> 26) & 1)
+		{
+			return;
+		}
 
-	// Scalar load/store immediate:
-	// size[31:30]
-	// V[26]
-	// opc[23:22]
-	// class bits[29:24] = 111001
-	if ((inst & 0x3B000000) == 0x39000000)
-	{
 		const u32 size = (inst >> 30) & 3;
 		const u32 opc  = (inst >> 22) & 3;
 
+		// Common decoding of the opc field of the plain (non-atomic) load/store classes
+		auto decode_ldst = [&]()
+		{
+			switch (opc)
+			{
+			case 0:
+			{
+				// STRB/STRH/STR (and the STUR/STTR variants)
+				r.op = A64_STORE;
+				r.mem_size = 1u << size;
+				r.reg_size = size == 3 ? 8u : 4u;
+				return;
+			}
+			case 1:
+			{
+				// LDRB/LDRH/LDR, zero-extending
+				r.op = A64_LOAD;
+				r.mem_size = 1u << size;
+				r.reg_size = size == 3 ? 8u : 4u;
+				return;
+			}
+			case 2:
+			case 3:
+			{
+				if (size == 3 || (size == 2 && opc == 3))
+				{
+					// PRFM (size=3, opc=2) and unallocated encodings: nothing to emulate
+					return;
+				}
+
+				// LDRSB/LDRSH/LDRSW, size selects the extension type:
+				// 00 LDRSB
+				// 01 LDRSH
+				// 10 LDRSW (Xt only)
+				r.op = A64_LOAD;
+				r.mem_size = 1u << size;
+				r.reg_signed = true;
+
+				// opc=2 -> Xt, opc=3 -> Wt
+				r.reg_size = (size == 2 || opc == 2) ? 8u : 4u;
+				return;
+			}
+			default:
+				return;
+			}
+		};
+
+		// Load/store register (unsigned immediate):
+		// size[31:30] 111 V[26] 01 opc[23:22] imm12[21:10] Rn[9:5] Rt[4:0]
+		if ((inst & 0x3B000000) == 0x39000000)
+		{
+			decode_ldst();
+			return;
+		}
+
+		// Everything below shares class bits[29:24] = 111000, the exact form is selected
+		// by bit 21 and bits[11:10]
+		if ((inst & 0x3B000000) != 0x38000000)
+		{
+			return;
+		}
+
+		const u32 op2 = (inst >> 21) & 1;
+		const u32 op4 = (inst >> 10) & 3;
+
+		if (!op2)
+		{
+			switch (op4)
+			{
+			case 0: // Unscaled immediate (LDUR/STUR)
+			case 2: // Unprivileged (LDTR/STTR), which behaves like the regular access at EL0
+			{
+				decode_ldst();
+				return;
+			}
+			case 1: // Post-indexed immediate
+			case 3: // Pre-indexed immediate
+			{
+				decode_ldst();
+
+				if (r.op == A64_INVALID)
+				{
+					return;
+				}
+
+				if (r.base_reg_num == 31)
+				{
+					// Writeback of SP, which is not addressable through GPR() (index 31 is the zero register there)
+					r.op = A64_INVALID;
+					return;
+				}
+
+				// Both forms write Rn + imm9 back into Rn, they only differ in the address used by the access itself
+				r.base_reg_incr = static_cast<s32>(inst << 11) >> 23;
+				return;
+			}
+			default:
+				return;
+			}
+		}
+
+		if (op4 == 2)
+		{
+			// Register offset (for example LDR Wt, [Xn, Xm{, extend}]), no writeback
+			if (!((inst >> 14) & 1))
+			{
+				// option[15:13] must be UXTW, LSL, SXTW or SXTX, the rest is unallocated
+				return;
+			}
+
+			decode_ldst();
+			return;
+		}
+
+		if (op4 != 0)
+		{
+			return;
+		}
+
+		//
+		// Atomic memory operations:
+		// size[31:30] 111000 A[23] R[22] 1[21] Rs[20:16] o3[15] opc[14:12] 00[11:10] Rn[9:5] Rt[4:0]
+		//
+		// A and R only select the memory ordering (LDADD vs LDADDA/LDADDAL/LDADDL). It is irrelevant
+		// here because the whole access is emulated while the faulting thread is stopped.
+		// https://developer.arm.com/documentation/ddi0596/2021-06/Base-Instructions/LDADD--LDADDA--LDADDAL--LDADDL--Atomic-add-on-word-or-doubleword-in-memory-
+		//
+		const u32 o3 = (inst >> 15) & 1;
+		const u32 aopc = (inst >> 12) & 7;
+
 		r.mem_size = 1u << size;
+		r.reg_size = size == 3 ? 8u : 4u;
 
-		switch (opc)
+		if (!o3)
 		{
-		case 0:
-		{
-			// STR
-			r.op = A64_STORE;
-			r.reg_size = r.mem_size;
-			return r;
+			// LDADD, LDCLR, LDEOR, LDSET, LDSMAX, LDSMIN, LDUMAX, LDUMIN
+			// The ST<op> aliases are the same encodings with Rt = 31, which discards the old value
+			r.op = A64_ATOMIC;
+			r.atomic_op = static_cast<atomic_a64_op_t>(aopc);
+			return;
 		}
-		case 1:
+
+		if (aopc == 0)
 		{
-			// LDR unsigned zero-extend
-			// size=3 (64-bit) -> Xt; everything else -> Wt
+			// SWP
+			r.op = A64_ATOMIC;
+			r.atomic_op = A64_ATOMIC_SWP;
+			return;
+		}
+
+		if (aopc == 4 && r.src_reg_num == 31 && opc == 2)
+		{
+			// LDAPR/LDAPRB/LDAPRH: zero-extending load-acquire (A=1, R=0, Rs=11111)
 			r.op = A64_LOAD;
-			r.reg_size = (size == 3) ? 8u : 4u;
-			r.reg_signed = false;
-			return r;
+			return;
 		}
-		case 2:
-		case 3:
-		{
-			if (size == 3)
-			{
-				return r;
-			}
+	}();
 
-			if (size == 2 && opc == 3)
-			{
-				// Invalid LDRSW
-				return r;
-			}
-
-			// LDRSB/LDRSH/LDRSW
-			// size determines extension type:
-			// 00 LDRSB
-			// 01 LDRSH
-			// 10 LDRSW
-			r.op = A64_LOAD;
-
-			if (size == 2)
-			{
-				// LDUSW
-				r.reg_size = 8;
-			}
-			else
-			{
-				// LDRSB/LDRSH
-				// opc=2 -> Wt, opc=3 -> Xt
-				r.reg_size = (opc == 3) ? 8 : 4;
-			}
-
-			r.reg_signed = true;
-			return r;
-		}
-		default:
-			return r;
-		}
-	}
-
-	// Scalar load/store unscaled immediate (LDUR/STUR)
-	// size[31:30]
-	// V[26]
-	// opc[23:22]
-	// class bits[29:24] = 111000
-	if ((inst & 0x3B000000) == 0x38000000)
+	if (r.op == A64_INVALID)
 	{
-		const u32 size = (inst >> 30) & 3;
-		const u32 opc  = (inst >> 22) & 3;
-
-		r.mem_size = 1u << size;
-
-		switch (opc)
-		{
-		case 0:
-		{
-			// STURB/STURH/STUR Wt/STUR Xt
-			r.op = A64_STORE;
-
-			// Source register width
-			r.reg_size = r.mem_size;
-			return r;
-		}
-
-		case 1:
-		{
-			// LDURB/LDURH/LDUR Wt/LDUR Xt
-			r.op = A64_LOAD;
-
-			// Destination register width
-			r.reg_size = (size == 3) ? 8 : 4;
-			r.reg_signed = false;
-			return r;
-		}
-
-		case 2:
-		case 3:
-		{
-			// LDURSB/LDURSH/LDURSW
-			if (size == 3)
-			{
-				return r;
-			}
-
-			r.op = A64_LOAD;
-			r.reg_signed = true;
-
-			if (size == 2)
-			{
-				// LDURSW
-				r.reg_size = 8;
-			}
-			else
-			{
-				// LDURSB/LDURSH
-				// opc=2 -> Wt, opc=3 -> Xt
-				r.reg_size = (opc == 3) ? 8 : 4;
-			}
-
-			return r;
-		}
-		default:
-			return r;
-		}
+		// Do not report an access size for instructions which are not going to be emulated
+		r.mem_size = 0;
+		r.reg_size = 0;
+		r.base_reg_incr = 0;
 	}
 
-	// 
+	//
 	// Literal loads:
-	// 
+	//
 	// LDR Wt, label
 	// LDR Xt, label
 	// LDRSW Xt, label
 	//
-
-	// This is not needed for MMIO (which is the only use for this function)
-
-	// if ((inst & 0x3B000000) == 0x18000000)
-	// {
-	// 	u32 opc = (inst >> 30) & 3;
-
-	// 	r.op = A64_LOAD;
-
-	// 	switch (opc)
-	// 	{
-	// 	case 0: // LDR Wt literal
-	// 	{
-	// 		r.mem_size = 4;
-	// 		r.reg_size = 4;
-	// 		return r;
-	// 	}
-	// 	case 1: // LDR Xt literal
-	// 	{
-	// 		r.mem_size = 8;
-	// 		r.reg_size = 8;
-	// 		return r;
-	// 	}
-	// 	case 2: // LDRSW literal
-	// 	{
-	// 		r.mem_size = 4;
-	// 		r.reg_size = 8;
-	// 		r.reg_signed = true;
-	// 		return r;
-	// 	}
-	// 	default:
-	// 	{
-	// 		break;
-	// 	}
-	// 	}
-	// }
+	// These are not needed for MMIO (which is the only use for this function)
+	//
 
 	return r;
 }
@@ -1490,27 +1519,16 @@ void put_a64_reg_value(ucontext_t* context, u32 reg_index, u32 reg_size, bool re
 
 	if (reg_index == 31)
 	{
-		// XZR "register" 
-		ensure(false);
+		// XZR/WZR "register": the result is discarded (this is how the ST<op> atomic aliases are encoded)
+		return;
 	}
 
-	auto make_mask = [](u32 bytes)
-	{
-		if (bytes == 8)
-		{
-			return umax;
-		}
-
-		const u64 bits = bytes * 8;
-		return (u64{1} << bits) - 1;
-	};
-
 	// Mask for sign-extending the value
-	const u64 sign_bit = value & (make_mask(mem_size) / 2 + 1);
-	const u64 sign_mask = (reg_signed && sign_bit != 0 && reg_size > mem_size) ? (make_mask(reg_size) & ~make_mask(mem_size)) : 0;
+	const u64 sign_bit = value & (get_a64_size_mask(mem_size) / 2 + 1);
+	const u64 sign_mask = (reg_signed && sign_bit != 0 && reg_size > mem_size) ? (get_a64_size_mask(reg_size) & ~get_a64_size_mask(mem_size)) : 0;
 
 	u64 temp_reg_value = 0;
-	temp_reg_value |= (value & make_mask(mem_size)); // Set value (adjusted by size)
+	temp_reg_value |= (value & get_a64_size_mask(mem_size)); // Set value (adjusted by size)
 	temp_reg_value |= sign_mask; // Apply sign-extension
 	GPR(context, reg_index) = temp_reg_value;
 }
@@ -1522,22 +1540,11 @@ u64 get_a64_reg_value(ucontext_t* context, u32 reg_index, u32 reg_size)
 
 	if (reg_index == 31)
 	{
-		// XZR "register"
+		// XZR/WZR "register"
 		return 0;
 	}
 
-	auto make_mask = [](u32 bytes)
-	{
-		if (bytes == 8)
-		{
-			return umax;
-		}
-
-		const u64 bits = bytes * 8;
-		return (u64{1} << bits) - 1;
-	};
-
-	return (GPR(context, reg_index) & make_mask(reg_size));
+	return (GPR(context, reg_index) & get_a64_size_mask(reg_size));
 }
 
 #endif /* ARCH_ARM64 */
@@ -1838,16 +1845,22 @@ bool handle_access_violation(u32 addr, bool is_writing, bool is_exec, ucontext_t
 
 	const u32 instruction = read_from_ptr_unsafe<u32>(code);
 
-	const auto [op, mem_size, reg_size, reg_index, reg_signed] = decode_a64_mem_inst(instruction);
+	const a64_mem_info_t inst_info = decode_a64_mem_inst(instruction);
+
+	const mem_a64_op_t op = inst_info.op;
+	const u32 mem_size = inst_info.mem_size;
+	const u32 reg_size = inst_info.reg_size;
+	const u32 reg_index = inst_info.reg_num;
+	const bool reg_signed = inst_info.reg_signed;
 
 	auto report_opcode = [&]()
 	{
-		sig_log.error("decode_a64_mem_inst(%p): unsupported opcode: %s", code, +std::bit_cast<be_t<u32>>(instruction));
+		sig_log.error("decode_a64_mem_inst(%p): unsupported opcode: 0x%08x", code, instruction);
 	};
 
 	if (0x1'0000'0000ull - addr < mem_size)
 	{
-		sig_log.error("Invalid mem_size (0x%llx)", mem_size);
+		sig_log.error("Invalid mem_size (0x%x)", mem_size);
 		report_opcode();
 		return false;
 	}
@@ -1864,7 +1877,7 @@ bool handle_access_violation(u32 addr, bool is_writing, bool is_exec, ucontext_t
 
 		if (!mem_size)
 		{
-			sig_log.error("Invalid or unsupported instruction (reg=%d, mem_size=%lld, reg_size=0x%llx)", reg_index, mem_size, reg_size);
+			sig_log.error("Invalid or unsupported instruction (reg=%u, mem_size=%u, reg_size=%u)", reg_index, mem_size, reg_size);
 			report_opcode();
 			return false;
 		}
@@ -1895,11 +1908,11 @@ bool handle_access_violation(u32 addr, bool is_writing, bool is_exec, ucontext_t
 
 			if (mem_size == 4)
 			{
-				value = std::bit_cast<be_t<u32>>(value);
+				value = stx::se_storage<u32>::swap(value);
 			}
 			else if (mem_size == 2)
 			{
-				value = std::bit_cast<be_t<u16>>(value);
+				value = stx::se_storage<u16>::swap(static_cast<u16>(value));
 			}
 			else
 			{
@@ -1926,16 +1939,72 @@ bool handle_access_violation(u32 addr, bool is_writing, bool is_exec, ucontext_t
 
 			const u64 reg_value = get_a64_reg_value(context, reg_index, reg_size);
 			const u32 val32 = static_cast<u32>(reg_value);
-			if (!thread->write_reg(addr, std::bit_cast<be_t<u32>>(val32)))
+			if (!thread->write_reg(addr, stx::se_storage<u32>::swap(val32)))
 			{
 				return false;
 			}
 
 			break;
 		}
+		case A64_ATOMIC:
+		{
+			if (mem_size != 4 || addr % 4)
+			{
+				// Only whole 32-bit registers can be emulated, sub-register RMW has no meaning for MMIO
+				handled = false;
+				break;
+			}
+
+			// Note: is_writing is not tested here, an atomic instruction both reads and writes
+
+			u32 value;
+			if (!thread->read_reg(addr, value))
+			{
+				return false;
+			}
+
+			// The registers are kept in host endianness, the guest observes them byte-swapped,
+			// and so does the operand register of the faulting instruction
+			const u32 old_value = stx::se_storage<u32>::swap(value);
+			const u32 src_value = static_cast<u32>(get_a64_reg_value(context, inst_info.src_reg_num, reg_size));
+
+			u32 new_value = 0;
+
+			switch (inst_info.atomic_op)
+			{
+			case A64_ATOMIC_ADD: new_value = old_value + src_value; break;
+			case A64_ATOMIC_CLR: new_value = old_value & ~src_value; break;
+			case A64_ATOMIC_EOR: new_value = old_value ^ src_value; break;
+			case A64_ATOMIC_SET: new_value = old_value | src_value; break;
+			case A64_ATOMIC_SMAX: new_value = static_cast<s32>(old_value) > static_cast<s32>(src_value) ? old_value : src_value; break;
+			case A64_ATOMIC_SMIN: new_value = static_cast<s32>(old_value) < static_cast<s32>(src_value) ? old_value : src_value; break;
+			case A64_ATOMIC_UMAX: new_value = old_value > src_value ? old_value : src_value; break;
+			case A64_ATOMIC_UMIN: new_value = old_value < src_value ? old_value : src_value; break;
+			case A64_ATOMIC_SWP: new_value = src_value; break;
+			default:
+			{
+				handled = false;
+				break;
+			}
+			}
+
+			if (!handled)
+			{
+				break;
+			}
+
+			if (!thread->write_reg(addr, stx::se_storage<u32>::swap(new_value)))
+			{
+				return false;
+			}
+
+			// Rt receives the value the register held before the operation (discarded if it is the zero register)
+			put_a64_reg_value(context, reg_index, reg_size, false, mem_size, old_value);
+			break;
+		}
 		default:
 		{
-			sig_log.error("Invalid or unsupported operation (reg=%d, mem_size=%lld, reg_size=0x%llx)", reg_index, mem_size, reg_size);
+			sig_log.error("Invalid or unsupported operation (op=%d, reg=%u, mem_size=%u, reg_size=%u)", +op, reg_index, mem_size, reg_size);
 			report_opcode();
 			return false;
 		}
@@ -1943,13 +2012,19 @@ bool handle_access_violation(u32 addr, bool is_writing, bool is_exec, ucontext_t
 
 		if (!handled)
 		{
-			sig_log.error("Invalid or unsupported operation (reg=%d, mem_size=%lld, reg_size=0x%llx)", reg_index, mem_size, reg_size);
+			sig_log.error("Invalid or unsupported operation (op=%d, reg=%u, mem_size=%u, reg_size=%u)", +op, reg_index, mem_size, reg_size);
 			report_opcode();
 			break;
 		}
 
+		if (inst_info.base_reg_incr)
+		{
+			// Apply the base register writeback of pre/post-indexed addressing
+			GPR(context, inst_info.base_reg_num) += static_cast<u64>(static_cast<s64>(inst_info.base_reg_incr));
+		}
+
 		// skip processed instruction
-		RIP(context) = reinterpret_cast<std::remove_cvref_t<decltype(RIP(context))>>(reinterpret_cast<const char*>(RIP(context)) + 4);
+		RIP(context) += 4;
 		g_tls_fault_spu++;
 		return true;
 	} while (0);
@@ -2528,7 +2603,7 @@ static void signal_handler(int /*sig*/, siginfo_t* info, void* uct) noexcept
 	}
 
 #else
-	const u32 insn = is_executing ? 0 : read_from_ptr_unsafe<u32>(RIP(context));
+	const u32 insn = is_executing ? 0 : read_from_ptr_unsafe<u32>(reinterpret_cast<const u8*>(RIP(context)));
 	const bool is_writing =
 		(insn & 0xbfff0000) == 0x0c000000 ||  // STR <Wt>, [<Xn>, #<imm>] (store word with immediate offset)
 		(insn & 0xbfe00000) == 0x0c800000 ||  // STP <Wt1>, <Wt2>, [<Xn>, #<imm>] (store pair of registers with immediate offset)
