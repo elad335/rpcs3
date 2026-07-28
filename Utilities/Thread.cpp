@@ -39,6 +39,7 @@ DYNAMIC_IMPORT_RENAME("Kernel32.dll", SetThreadDescriptionImport, "SetThreadDesc
 #define __USE_GNU
 #include <mach/thread_act.h>
 #include <mach/thread_policy.h>
+#include <mach/mach.h>
 #endif
 #if defined(__DragonFly__) || defined(__FreeBSD__) || defined(__OpenBSD__)
 #include <pthread_np.h>
@@ -2586,30 +2587,63 @@ static void signal_handler(int /*sig*/, siginfo_t* info, void* uct) noexcept
 	append_thread_name(msg);
 
 #ifdef __APPLE__
-	thread_local bool s_tls_is_attempting_recovery = false;
+	thread_local u64 s_tls_is_attempting_recovery = false;
+	thread_local u64 s_tls_last_recovery_time = 0;
 	thread_local bool s_tls_last_cause_is_executing = false;
 
 	if (reinterpret_cast<u64>(info->si_addr) < 0x10000)
 	{
 		// Do not recover from the virtual page of 0x0 (such as nullptr)
 	}
+#ifdef ARCH_ARM64
+	else if (reinterpret_cast<uptr>(RIP(context)) % 4)
+	{
+		// Unaligned instruction pointer, skip recovery
+	}
+#endif
 	else if (is_executing || is_writing)
 	{
+
+		const u64 recovery_time = get_system_time();
+
 		if (s_tls_is_attempting_recovery && s_tls_last_cause_is_executing != is_executing)
 		{
 			// Cause changed, inform recovery
-			s_tls_is_attempting_recovery = false;
+			s_tls_is_attempting_recovery = 0;
 		}
 
-		if (!s_tls_is_attempting_recovery)
+		if (s_tls_is_attempting_recovery && recovery_time - s_tls_last_recovery_time >= 500000u)
+		{
+			// Half a second passed, this is more than enough for another attempt
+			s_tls_is_attempting_recovery = 0;
+		}
+	
+		constexpr u64 max_recovery_attempts = 3;
+
+		// Verify that the faulting address is actually mapped
+		const mach_vm_address_t addr = static_cast<mach_vm_address_t>(reinterpret_cast<u64>(info->si_addr));
+		mach_vm_size_t size = 0;
+
+		vm_region_basic_info_data_64_t info;
+		mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+		mach_port_t object_name = MACH_PORT_NULL;
+
+		mach_vm_address_t region_addr = addr;
+
+		kern_return_t kr = mach_vm_region(mach_task_self(), &region_addr, &size, VM_REGION_BASIC_INFO_64
+			, reinterpret_cast<vm_region_info_t>(&info), &count, &object_name);
+
+		if (kr == KERN_SUCCESS && addr >= region_addr && addr < region_addr + size && s_tls_is_attempting_recovery < max_recovery_attempts)
 		{
 			s_tls_last_cause_is_executing = is_executing;
-			s_tls_is_attempting_recovery = true;
+			s_tls_is_attempting_recovery++;
+			s_tls_last_recovery_time = recovery_time;
+			s_tls_recovery_time = get_system_time();
 			pthread_jit_write_protect_np(is_executing ? true : false);
 
 			sys_log.error("\n%s", msg);
 			sys_log.notice("\n%s", dump_useful_thread_info());
-			sys_log.error("Attempting recovery using pthread_jit_write_protect_np()");
+			sys_log.error("Attempting recovery using pthread_jit_write_protect_np(%u)", is_executing ? true : false);
 			logs::listener::sync_all();
 			return;
 		}
