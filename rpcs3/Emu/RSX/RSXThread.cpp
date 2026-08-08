@@ -1092,7 +1092,7 @@ namespace rsx
 			fifo_ctrl->restore_state(restore_fifo_cmd, restore_fifo_count);
 		}
 
-		if (!send_event(0, event_flags, 0))
+		if (lv2_context && !send_event(lv2_context, 0, event_flags, 0))
 		{
 			return;
 		}
@@ -3189,7 +3189,7 @@ namespace rsx
 	{
 		if (!isHLE)
 		{
-			send_event(0, event_data1, event_data2);
+			send_event(lv2_context, 0, event_data1, event_data2);
 		}
 	}
 
