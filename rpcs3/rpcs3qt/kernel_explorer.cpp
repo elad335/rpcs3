@@ -354,13 +354,20 @@ void kernel_explorer::update()
 			auto& mem = static_cast<lv2_memory&>(obj);
 			const f64 size_mb = mem.size * 1. / (1024 * 1024);
 
+			u64 all_mappings_ctr = 0;
+
+			for (auto [process, in_ctr] : mem.counters)
+			{
+				all_mappings_ctr += in_ctr;
+			}
+
 			if (mem.pshared)
 			{
-				add_leaf(node, QString::fromStdString(fmt::format("Shared Mem 0x%08x: Size: 0x%x (%0.2f MB), Chunk: %s, Mappings: %u, Mem Container: %s, Key: %#llx", id, mem.size, size_mb, mem.align == 0x10000u ? "64K" : "1MB", +mem.counter, mem.ct->id, mem.key)));
+				add_leaf(node, QString::fromStdString(fmt::format("Shared Mem 0x%08x: Size: 0x%x (%0.2f MB), Chunk: %s, Mappings: %u, Mem Container: %s, Key: %#llx", id, mem.size, size_mb, mem.align == 0x10000u ? "64K" : "1MB", all_mappings_ctr, mem.ct->id, mem.key)));
 				break;
 			}
 
-			add_leaf(node, QString::fromStdString(fmt::format("Shared Mem 0x%08x: Size: 0x%x (%0.2f MB), Chunk: %s, Mem Container: %s, Mappings: %u", id, mem.size, size_mb, mem.align == 0x10000u ? "64K" : "1MB", mem.ct->id, +mem.counter)));
+			add_leaf(node, QString::fromStdString(fmt::format("Shared Mem 0x%08x: Size: 0x%x (%0.2f MB), Chunk: %s, Mem Container: %s, Mappings: %u", id, mem.size, size_mb, mem.align == 0x10000u ? "64K" : "1MB", mem.ct->id, all_mappings_ctr)));
 			break;
 		}
 		case SYS_MUTEX_OBJECT:
