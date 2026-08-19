@@ -26,6 +26,8 @@
 #include "util/asm.hpp"
 #include <vulkan/vulkan_core.h>
 
+#define REGS(ctx) (rsx::method_registers)
+
 namespace vk
 {
 	VkCompareOp get_compare_func(rsx::comparison_function op, bool reverse_direction = false);
@@ -224,10 +226,10 @@ namespace vk
 	vertex_input_assembly_state decode_vertex_input_assembly_state()
 	{
 		vertex_input_assembly_state state{};
-		const auto& current_draw = rsx::method_registers.current_draw_clause;
+		const auto& current_draw = REGS(0)->current_draw_clause;
 		const auto [primitive, emulated_primitive] = vk::get_appropriate_topology(current_draw.primitive);
 
-		if (rsx::method_registers.restart_index_enabled() &&
+		if (REGS(0)->restart_index_enabled() &&
 			!current_draw.is_disjoint_primitive &&
 			current_draw.command == rsx::draw_command::indexed &&
 			!emulated_primitive &&
@@ -257,32 +259,32 @@ namespace vk
 
 		// Rasterizer state
 		properties.state.set_attachment_count(num_draw_buffers);
-		properties.state.set_front_face(vk::get_front_face(rsx::method_registers.front_face_mode()));
-		properties.state.enable_depth_clamp(rsx::method_registers.depth_clamp_enabled() || !rsx::method_registers.depth_clip_enabled());
+		properties.state.set_front_face(vk::get_front_face(REGS(0)->front_face_mode()));
+		properties.state.enable_depth_clamp(REGS(0)->depth_clamp_enabled() || !REGS(0)->depth_clip_enabled());
 		properties.state.enable_depth_bias(true);
 		properties.state.enable_depth_bounds_test(depth_bounds_support);
 
-		if (rsx::method_registers.depth_test_enabled())
+		if (REGS(0)->depth_test_enabled())
 		{
 			//NOTE: Like stencil, depth write is meaningless without depth test
-			properties.state.set_depth_mask(rsx::method_registers.depth_write_enabled());
-			properties.state.enable_depth_test(vk::get_compare_func(rsx::method_registers.depth_func()));
+			properties.state.set_depth_mask(REGS(0)->depth_write_enabled());
+			properties.state.enable_depth_test(vk::get_compare_func(REGS(0)->depth_func()));
 		}
 
-		if (rsx::method_registers.cull_face_enabled())
+		if (REGS(0)->cull_face_enabled())
 		{
-			properties.state.enable_cull_face(vk::get_cull_face(rsx::method_registers.cull_face_mode()));
+			properties.state.enable_cull_face(vk::get_cull_face(REGS(0)->cull_face_mode()));
 		}
 
-		const auto host_write_mask = rsx::get_write_output_mask(rsx::method_registers.surface_color());
+		const auto host_write_mask = rsx::get_write_output_mask(REGS(0)->surface_color());
 		for (uint index = 0; index < num_draw_buffers; ++index)
 		{
-			bool color_mask_b = rsx::method_registers.color_mask_b(index);
-			bool color_mask_g = rsx::method_registers.color_mask_g(index);
-			bool color_mask_r = rsx::method_registers.color_mask_r(index);
-			bool color_mask_a = rsx::method_registers.color_mask_a(index);
+			bool color_mask_b = REGS(0)->color_mask_b(index);
+			bool color_mask_g = REGS(0)->color_mask_g(index);
+			bool color_mask_r = REGS(0)->color_mask_r(index);
+			bool color_mask_a = REGS(0)->color_mask_a(index);
 
-			switch (rsx::method_registers.surface_color())
+			switch (REGS(0)->surface_color())
 			{
 			case rsx::surface_color_format::b8:
 				rsx::get_b8_colormask(color_mask_r, color_mask_g, color_mask_b, color_mask_a);
@@ -303,18 +305,18 @@ namespace vk
 		}
 
 		// LogicOp and Blend are mutually exclusive. If both are enabled, LogicOp takes precedence.
-		if (rsx::method_registers.logic_op_enabled())
+		if (REGS(0)->logic_op_enabled())
 		{
-			properties.state.enable_logic_op(vk::get_logic_op(rsx::method_registers.logic_operation()));
+			properties.state.enable_logic_op(vk::get_logic_op(REGS(0)->logic_operation()));
 		}
 		else
 		{
 			bool mrt_blend_enabled[] =
 			{
-				rsx::method_registers.blend_enabled(),
-				rsx::method_registers.blend_enabled_surface_1(),
-				rsx::method_registers.blend_enabled_surface_2(),
-				rsx::method_registers.blend_enabled_surface_3()
+				REGS(0)->blend_enabled(),
+				REGS(0)->blend_enabled_surface_1(),
+				REGS(0)->blend_enabled_surface_2(),
+				REGS(0)->blend_enabled_surface_3()
 			};
 
 			VkBlendFactor sfactor_rgb, sfactor_a, dfactor_rgb, dfactor_a;
@@ -322,12 +324,12 @@ namespace vk
 
 			if (mrt_blend_enabled[0] || mrt_blend_enabled[1] || mrt_blend_enabled[2] || mrt_blend_enabled[3])
 			{
-				sfactor_rgb = vk::get_blend_factor(rsx::method_registers.blend_func_sfactor_rgb());
-				sfactor_a = vk::get_blend_factor(rsx::method_registers.blend_func_sfactor_a());
-				dfactor_rgb = vk::get_blend_factor(rsx::method_registers.blend_func_dfactor_rgb());
-				dfactor_a = vk::get_blend_factor(rsx::method_registers.blend_func_dfactor_a());
-				equation_rgb = vk::get_blend_op(rsx::method_registers.blend_equation_rgb());
-				equation_a = vk::get_blend_op(rsx::method_registers.blend_equation_a());
+				sfactor_rgb = vk::get_blend_factor(REGS(0)->blend_func_sfactor_rgb());
+				sfactor_a = vk::get_blend_factor(REGS(0)->blend_func_sfactor_a());
+				dfactor_rgb = vk::get_blend_factor(REGS(0)->blend_func_dfactor_rgb());
+				dfactor_a = vk::get_blend_factor(REGS(0)->blend_func_dfactor_a());
+				equation_rgb = vk::get_blend_op(REGS(0)->blend_equation_rgb());
+				equation_a = vk::get_blend_op(REGS(0)->blend_equation_a());
 
 				for (u8 idx = 0; idx < num_draw_buffers; ++idx)
 				{
@@ -339,31 +341,31 @@ namespace vk
 			}
 		}
 
-		if (rsx::method_registers.stencil_test_enabled())
+		if (REGS(0)->stencil_test_enabled())
 		{
-			if (!rsx::method_registers.two_sided_stencil_test_enabled())
+			if (!REGS(0)->two_sided_stencil_test_enabled())
 			{
 				properties.state.enable_stencil_test(
-					vk::get_stencil_op(rsx::method_registers.stencil_op_fail()),
-					vk::get_stencil_op(rsx::method_registers.stencil_op_zfail()),
-					vk::get_stencil_op(rsx::method_registers.stencil_op_zpass()),
-					vk::get_compare_func(rsx::method_registers.stencil_func()),
+					vk::get_stencil_op(REGS(0)->stencil_op_fail()),
+					vk::get_stencil_op(REGS(0)->stencil_op_zfail()),
+					vk::get_stencil_op(REGS(0)->stencil_op_zpass()),
+					vk::get_compare_func(REGS(0)->stencil_func()),
 					0xFF, 0xFF); //write mask, func_mask, ref are dynamic
 			}
 			else
 			{
 				properties.state.enable_stencil_test_separate(0,
-					vk::get_stencil_op(rsx::method_registers.stencil_op_fail()),
-					vk::get_stencil_op(rsx::method_registers.stencil_op_zfail()),
-					vk::get_stencil_op(rsx::method_registers.stencil_op_zpass()),
-					vk::get_compare_func(rsx::method_registers.stencil_func()),
+					vk::get_stencil_op(REGS(0)->stencil_op_fail()),
+					vk::get_stencil_op(REGS(0)->stencil_op_zfail()),
+					vk::get_stencil_op(REGS(0)->stencil_op_zpass()),
+					vk::get_compare_func(REGS(0)->stencil_func()),
 					0xFF, 0xFF); //write mask, func_mask, ref are dynamic
 
 				properties.state.enable_stencil_test_separate(1,
-					vk::get_stencil_op(rsx::method_registers.back_stencil_op_fail()),
-					vk::get_stencil_op(rsx::method_registers.back_stencil_op_zfail()),
-					vk::get_stencil_op(rsx::method_registers.back_stencil_op_zpass()),
-					vk::get_compare_func(rsx::method_registers.back_stencil_func()),
+					vk::get_stencil_op(REGS(0)->back_stencil_op_fail()),
+					vk::get_stencil_op(REGS(0)->back_stencil_op_zfail()),
+					vk::get_stencil_op(REGS(0)->back_stencil_op_zpass()),
+					vk::get_compare_func(REGS(0)->back_stencil_func()),
 					0xFF, 0xFF); //write mask, func_mask, ref are dynamic
 			}
 
@@ -384,13 +386,13 @@ namespace vk
 
 		if (backend_config.supports_hw_a2c || num_rasterization_samples > 1)
 		{
-			const bool alpha_to_one_enable = rsx::method_registers.msaa_alpha_to_one_enabled() && backend_config.supports_hw_a2one;
+			const bool alpha_to_one_enable = REGS(0)->msaa_alpha_to_one_enabled() && backend_config.supports_hw_a2one;
 
 			properties.state.set_multisample_state(
 				num_rasterization_samples,
-				rsx::method_registers.msaa_sample_mask(),
-				rsx::method_registers.msaa_enabled(),
-				rsx::method_registers.msaa_alpha_to_coverage_enabled(),
+				REGS(0)->msaa_sample_mask(),
+				REGS(0)->msaa_enabled(),
+				REGS(0)->msaa_alpha_to_coverage_enabled(),
 				alpha_to_one_enable);
 
 			// A problem observed on multiple GPUs is that interior geometry edges can resolve 0 samples unless we force shading rate of 1.
@@ -1043,8 +1045,8 @@ bool VKGSRender::on_vram_exhausted(rsx::problem_severity severity)
 				}
 			};
 
-			scan_array(rsx::method_registers.fragment_textures);
-			scan_array(rsx::method_registers.vertex_textures);
+			scan_array(REGS(0)->fragment_textures);
+			scan_array(REGS(0)->vertex_textures);
 
 			// Hold the secondary lock guard to prevent threads from trying to touch access violation handler stuff
 			std::lock_guard lock(m_secondary_cb_guard);
@@ -1109,8 +1111,8 @@ bool VKGSRender::on_vram_exhausted(rsx::problem_severity severity)
 			}
 		};
 
-		scan_array(rsx::method_registers.fragment_textures, fs_sampler_state);
-		scan_array(rsx::method_registers.vertex_textures, vs_sampler_state);
+		scan_array(REGS(0)->fragment_textures, fs_sampler_state);
+		scan_array(REGS(0)->vertex_textures, vs_sampler_state);
 
 		if (invalidate_samplers)
 		{
@@ -1171,10 +1173,10 @@ void VKGSRender::set_viewport()
 {
 	const auto [clip_width, clip_height] = rsx::apply_resolution_scale<true>(
 		resolution_scaling_config,
-		rsx::method_registers.surface_clip_width(), rsx::method_registers.surface_clip_height());
+		REGS(0)->surface_clip_width(), REGS(0)->surface_clip_height());
 
-	const auto zclip_near = rsx::method_registers.clip_min();
-	const auto zclip_far = rsx::method_registers.clip_max();
+	const auto zclip_near = REGS(0)->clip_min();
+	const auto zclip_far = REGS(0)->clip_max();
 
 	//NOTE: The scale_offset matrix already has viewport matrix factored in
 	m_viewport.x = 0;
@@ -1217,8 +1219,8 @@ void VKGSRender::bind_viewport()
 	{
 		if (m_device->get_unrestricted_depth_range_support())
 		{
-			m_viewport.minDepth = rsx::method_registers.clip_min();
-			m_viewport.maxDepth = rsx::method_registers.clip_max();
+			m_viewport.minDepth = REGS(0)->clip_min();
+			m_viewport.maxDepth = REGS(0)->clip_max();
 		}
 
 		m_graphics_state.clear(rsx::pipeline_state::zclip_config_state_dirty);
@@ -1278,7 +1280,7 @@ void VKGSRender::clear_surface(u32 mask)
 	if (skip_current_frame || swapchain_unavailable) return;
 
 	// If stencil write mask is disabled, remove clear_stencil bit
-	if (!rsx::method_registers.stencil_mask()) mask &= ~RSX_GCM_CLEAR_STENCIL_BIT;
+	if (!REGS(0)->stencil_mask()) mask &= ~RSX_GCM_CLEAR_STENCIL_BIT;
 
 	// Ignore invalid clear flags
 	if (!(mask & RSX_GCM_CLEAR_ANY_MASK)) return;
@@ -1314,7 +1316,7 @@ void VKGSRender::clear_surface(u32 mask)
 
 	const bool full_frame = (scissor_w == fb_width && scissor_h == fb_height);
 	bool update_color = false, update_z = false;
-	auto surface_depth_format = rsx::method_registers.surface_depth_fmt();
+	auto surface_depth_format = REGS(0)->surface_depth_fmt();
 
 	if (auto ds = std::get<1>(m_rtts.m_bound_depth_stencil); mask & RSX_GCM_CLEAR_DEPTH_STENCIL_MASK)
 	{
@@ -1322,7 +1324,7 @@ void VKGSRender::clear_surface(u32 mask)
 		{
 			u32 max_depth_value = get_max_depth_value(surface_depth_format);
 
-			u32 clear_depth = rsx::method_registers.z_clear_value(is_depth_stencil_format(surface_depth_format));
+			u32 clear_depth = REGS(0)->z_clear_value(is_depth_stencil_format(surface_depth_format));
 			float depth_clear = static_cast<float>(clear_depth) / max_depth_value;
 
 			depth_stencil_clear_values.depthStencil.depth = depth_clear;
@@ -1335,7 +1337,7 @@ void VKGSRender::clear_surface(u32 mask)
 		{
 			if (mask & RSX_GCM_CLEAR_STENCIL_BIT)
 			{
-				u8 clear_stencil = rsx::method_registers.stencil_clear_value();
+				u8 clear_stencil = REGS(0)->stencil_clear_value();
 				depth_stencil_clear_values.depthStencil.stencil = clear_stencil;
 
 				depth_stencil_mask |= VK_IMAGE_ASPECT_STENCIL_BIT;
@@ -1384,12 +1386,12 @@ void VKGSRender::clear_surface(u32 mask)
 		if (!m_draw_buffers.empty())
 		{
 			bool use_fast_clear = (colormask == RSX_GCM_CLEAR_COLOR_RGBA_MASK);;
-			u8 clear_a = rsx::method_registers.clear_color_a();
-			u8 clear_r = rsx::method_registers.clear_color_r();
-			u8 clear_g = rsx::method_registers.clear_color_g();
-			u8 clear_b = rsx::method_registers.clear_color_b();
+			u8 clear_a = REGS(0)->clear_color_a();
+			u8 clear_r = REGS(0)->clear_color_r();
+			u8 clear_g = REGS(0)->clear_color_g();
+			u8 clear_b = REGS(0)->clear_color_b();
 
-			switch (rsx::method_registers.surface_color())
+			switch (REGS(0)->surface_color())
 			{
 			case rsx::surface_color_format::x32:
 			case rsx::surface_color_format::w16z16y16x16:
@@ -1488,7 +1490,7 @@ void VKGSRender::clear_surface(u32 mask)
 	if (depth_stencil_mask)
 	{
 		if ((depth_stencil_mask & VK_IMAGE_ASPECT_STENCIL_BIT) &&
-			rsx::method_registers.stencil_mask() != 0xff)
+			REGS(0)->stencil_mask() != 0xff)
 		{
 			// Partial stencil clear. Disables fast stencil clear
 			auto ds = std::get<1>(m_rtts.m_bound_depth_stencil);
@@ -1498,7 +1500,7 @@ void VKGSRender::clear_surface(u32 mask)
 			vk::get_overlay_pass<vk::stencil_clear_pass>()->run(
 				*m_current_command_buffer, ds, region.rect,
 				depth_stencil_clear_values.depthStencil.stencil,
-				rsx::method_registers.stencil_mask(), renderpass);
+				REGS(0)->stencil_mask(), renderpass);
 
 			depth_stencil_mask &= ~VK_IMAGE_ASPECT_STENCIL_BIT;
 		}
