@@ -219,8 +219,18 @@ error_code sys_storage_get_device_info(u64 device, vm::ptr<StorageDeviceInfo> bu
 
 		std::string u = "unnamed";
 		memcpy(buffer->name, u.c_str(), u.size());
-		buffer->sector_count = 0x4D955;
-		buffer->sector_size = 0x800;
+
+		if (false)
+		{
+			buffer->sector_count = 0;
+			buffer->sector_size = 0x7FFFFFFF;
+		}
+		else
+		{
+			buffer->sector_count = 0x4D955;
+			buffer->sector_size = 0x800;
+		}
+
 		buffer->one = 1;
 		buffer->flags[1] = 0;
 		buffer->flags[2] = 1;
@@ -389,10 +399,14 @@ error_code sys_storage_report_devices(u32 storages, u32 start, u32 devices, vm::
 	return CELL_OK;
 }
 
-error_code sys_storage_configure_medium_event(u32 fd, u32 equeue_id, u32 c)
+error_code sys_storage_configure_medium_event(u32 fd, u32 equeue_id, vm::ptr<u32> handle)
 {
 	sys_storage.todo("sys_storage_configure_medium_event(fd=0x%x, equeue_id=0x%x, c=0x%x)", fd, equeue_id, c);
 
+	if (fd)
+	{
+
+	}
 	return CELL_OK;
 }
 
