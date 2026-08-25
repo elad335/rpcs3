@@ -1372,7 +1372,7 @@ namespace rsx
 			sync();
 		}
 
-		if (is_stopped())
+		if (is_stopped() && lv2_rsx_process)
 		{
 			std::lock_guard lock(m_mtx_task);
 
