@@ -401,7 +401,7 @@ error_code sys_storage_report_devices(u32 storages, u32 start, u32 devices, vm::
 
 error_code sys_storage_configure_medium_event(u32 fd, u32 equeue_id, vm::ptr<u32> handle)
 {
-	sys_storage.todo("sys_storage_configure_medium_event(fd=0x%x, equeue_id=0x%x, c=0x%x)", fd, equeue_id, c);
+	sys_storage.todo("sys_storage_configure_medium_event(fd=0x%x, equeue_id=0x%x, c=0x%x)", fd, equeue_id, handle);
 
 	if (fd)
 	{
