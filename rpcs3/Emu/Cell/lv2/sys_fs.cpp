@@ -3639,6 +3639,12 @@ error_code sys_fs_mount(ppu_thread& ppu, vm::cptr<char> dev_name, vm::cptr<char>
 		}
 	}
 
+	if (root_name == "dev_bdvd")
+	{
+		// TO BE HOOKED
+		// vfs_path = "";
+	}
+
 	if (!vfs::mount("/" + std::string{root_name}, vfs_path, !is_simplefs))
 	{
 		if (is_simplefs)
@@ -3657,7 +3663,6 @@ error_code sys_fs_mount(ppu_thread& ppu, vm::cptr<char> dev_name, vm::cptr<char>
 	}
 
 	g_fxo->get<lv2_fs_mount_info_map>().add("/" + std::string{root_name}, mp, device_name, filesystem, prot);
-
 	return CELL_OK;
 }
 
